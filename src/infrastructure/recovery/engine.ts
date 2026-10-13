@@ -80,11 +80,11 @@ export class MediaRecovery {
   private async checkpoint(point: FaultPoint, operation: Operation, objectIndex?: number) {
     await this.gate(point, { key: operation.key, attempt: operation.attempt, objectIndex });
   }
-  private heartbeat(operation: Operation) {
+  private keepLeaseAlive(renew: () => Promise<void>) {
     let pending: Promise<void> | undefined;
     const timer = setInterval(() => {
       if (pending) return;
-      const current = this.journal.heartbeat(operation).catch(() => {
+      const current = renew().catch(() => {
         // Every storage mutation and final commit checks the lease again.
       });
       pending = current;
@@ -93,6 +93,7 @@ export class MediaRecovery {
     timer.unref();
     return async () => { clearInterval(timer); await pending; };
   }
+  private heartbeat(operation: Operation) { return this.keepLeaseAlive(() => this.journal.heartbeat(operation)); }
   private async execute(original: any, kind: OperationKind, data: any, files: any[], user?: any, oldFile?: any, intent?: { key: string; requestHash: string }) {
     const { ctx, actor, key } = this.context(user, oldFile?.id, intent?.key);
     const requestHash = intent?.requestHash ?? await requestFingerprint(kind, oldFile?.id, data, files);
@@ -216,16 +217,23 @@ export class MediaRecovery {
           this.strapi.log.warn('[media-recovery] Operation remains pending; dependency or lease unavailable');
         } finally { await stopHeartbeat(); }
       }
-      for (let count = 0; count < 8 && !this.stopped; count++) {
-        const cleanup = await this.journal.claimCleanup();
-        if (!cleanup) break;
-        try {
-          for (const [index, object] of cleanup.objects.entries()) {
-            await this.storage.remove(object);
-            await this.gate('during-cleanup', { key: cleanup.operation_key, attempt: cleanup.attempt, objectIndex: index });
-          }
-          await this.journal.finishCleanup(cleanup.id, cleanup.lease_owner);
-        } catch { this.strapi.log.warn('[media-recovery] Object cleanup will be resumed'); }
+      // Finite deletions and recurring late-PUT watches each have reserved capacity.
+      for (const [recurring, budget] of [[false, 8], [true, 2]] as const) {
+        for (let count = 0; count < budget && !this.stopped; count++) {
+          const cleanup = await this.journal.claimCleanup(undefined, recurring);
+          if (!cleanup) break;
+          const assertLease = () => this.journal.assertCleanupLease(cleanup.id, cleanup.lease_owner);
+          const stopHeartbeat = this.keepLeaseAlive(() => this.journal.heartbeatCleanup(cleanup.id, cleanup.lease_owner));
+          try {
+            for (const [index, object] of cleanup.objects.entries()) {
+              await assertLease();
+              await this.storage.remove(object, assertLease);
+              await this.gate('during-cleanup', { key: cleanup.operation_key, attempt: cleanup.attempt, objectIndex: index });
+            }
+            await this.journal.finishCleanup(cleanup.id, cleanup.lease_owner);
+          } catch { this.strapi.log.warn('[media-recovery] Object cleanup will be resumed'); }
+          finally { await stopHeartbeat(); }
+        }
       }
     } catch { this.strapi.log.warn('[media-recovery] Reconciliation waits for the database'); }
     finally { this.running = false; }

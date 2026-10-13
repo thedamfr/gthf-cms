@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { S3Client, HeadObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { createRecoveryStorage, sha256 } from '../src/infrastructure/recovery/storage';
+import { RecoveryError } from '../src/infrastructure/recovery/types';
 
 const config = () => ({ provider: 'aws-s3', providerOptions: { rootPath: 'old root/', s3Options: { region: 'us-east-1', params: { Bucket: 'synthetic' } } } });
 test('legacy S3 cleanup uses the exact key computed by the pinned provider', async () => {
@@ -84,4 +85,18 @@ test('a prepared spool is streamed to S3 and changed bytes are refused before PU
     await assert.rejects(recovery.put(object, filepath), /changed after preparation/);
     assert.equal(puts, 1);
   } finally { recovery.close(); S3Client.prototype.send = original; await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('loss of cleanup ownership after HEAD prevents the following S3 DELETE', async () => {
+  const original = S3Client.prototype.send; const sent: string[] = []; let checks = 0;
+  const bytes = Buffer.from('owned'); const object = { key: 'immutable', sha256: sha256(bytes), bytes: bytes.length };
+  S3Client.prototype.send = (async (command: any) => {
+    sent.push(command.constructor.name); return { Metadata: { gthfsha256: object.sha256 }, ContentLength: bytes.length };
+  }) as any;
+  const storage = createRecoveryStorage(config());
+  try {
+    await assert.rejects(storage.remove(object, async () => { if (++checks === 2) throw new RecoveryError(409, 'CLEANUP_LEASE_LOST', 'lost'); }), (e: any) => e.code === 'CLEANUP_LEASE_LOST');
+    assert.deepEqual(sent, ['HeadObjectCommand']);
+  } finally { storage.close(); S3Client.prototype.send = original; }
 });

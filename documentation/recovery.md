@@ -268,3 +268,19 @@ indique `replayed`, error indique `code` et `retryable`. L’admin consulte le r
 avant de renvoyer et ne relance pas la génération de métadonnées sur un replay.
 Une coupure du flux peut laisser certaines entrées sans tentative : leurs clés
 persistées permettent de les distinguer des entrées déjà committed.
+
+
+### Capacité et baux du nettoyage
+
+Chaque cycle réserve huit lignes aux suppressions finies et deux aux surveillances
+récurrentes de PUT tardif. Une accumulation d’intentions abandonnées ne prend donc
+pas toute la capacité des suppressions explicites ; les deux classes progressent.
+Le balayage récurrent est replanifié à au moins 60 s, pas garanti toutes les 60 s
+si le nombre d’intentions ou la latence S3 dépasse la capacité. Son retard augmente
+avec cette charge ; aucune borne de débit illimité n’est promise.
+
+Le bail cleanup est renouvelé toutes les 15 s pendant le traitement, vérifié avant
+chaque HEAD/DELETE S3 et à la finalisation. Un propriétaire expiré ne peut pas
+renouveler son ancien bail ni finaliser la ligne. L’arrêt gracieux attend également
+le renouvellement actif. Un appel S3 déjà envoyé peut finir après perte du bail,
+mais il porte uniquement sur la clé immuable de la tentative nettoyée.

@@ -72,8 +72,8 @@ test('a late PUT is cleaned on a later sweep while retry bytes and a foreign col
   const engine = new MediaRecovery({ db: { connection: state.db }, log: { warn(message: string) { throw new Error(message); } } }, storage);
   engine.batches.claimExpired = async () => undefined;
   engine.journal.claimExpired = async () => { if (!expired) return undefined; expired = false; return operation; };
-  engine.journal.claimCleanup = async () => {
-    const row = state.tables[MEDIA_CLEANUP_TABLE].find((entry) => entry.not_before <= state.now()
+  engine.journal.claimCleanup = async (_key, recurring) => {
+    const row = state.tables[MEDIA_CLEANUP_TABLE].find((entry) => entry.recurring === recurring && entry.not_before <= state.now()
       && (!entry.lease_until || entry.lease_until <= state.now()));
     if (!row) return undefined;
     claimed++;
@@ -139,4 +139,61 @@ test('an expired cleanup lease can neither remove nor reschedule a recurring int
   await assert.rejects(engine.journal.finishCleanup(row.id, 'owner'), (error: any) => error.code === 'CLEANUP_LEASE_LOST');
   assert.deepEqual(row, before);
   assert.equal(state.tables[MEDIA_CLEANUP_TABLE].length, 1);
+});
+
+
+test('a cleanup heartbeat extends a live lease but cannot revive expiry or another owner', async () => {
+  const state = persistence(); const engine = new MediaRecovery({ db: { connection: state.db } }, {} as any);
+  const row = { id: 'long-cleanup', state: 'pending', lease_owner: 'owner', lease_until: state.now() + 90_000 };
+  state.tables[MEDIA_CLEANUP_TABLE].push(row);
+  state.advance(80_000); await engine.journal.heartbeatCleanup(row.id, 'owner');
+  assert.equal(row.lease_until, state.now() + 90_000);
+  await engine.journal.assertCleanupLease(row.id, 'owner');
+  await assert.rejects(engine.journal.heartbeatCleanup(row.id, 'other'), (e: any) => e.code === 'CLEANUP_LEASE_LOST');
+  state.advance(90_001);
+  await assert.rejects(engine.journal.assertCleanupLease(row.id, 'owner'), (e: any) => e.code === 'CLEANUP_LEASE_LOST');
+  await assert.rejects(engine.journal.heartbeatCleanup(row.id, 'owner'), (e: any) => e.code === 'CLEANUP_LEASE_LOST');
+});
+
+test('finite cleanup and recurring tombstones retain separate capacity under backlog', async () => {
+  const claimed = { finite: 0, recurring: 0 }; const completed: string[] = [];
+  const engine = new MediaRecovery({ db: { connection: {} }, log: { warn() {} } }, { remove: async () => {} } as any);
+  engine.batches.claimExpired = async () => undefined; engine.journal.claimExpired = async () => undefined;
+  engine.journal.claimCleanup = async (_key, recurring) => {
+    const kind = recurring ? 'recurring' : 'finite'; claimed[kind]++;
+    return { id: kind + claimed[kind], recurring, lease_owner: 'owner', objects: [{ key: 'immutable' }] };
+  };
+  engine.journal.assertCleanupLease = async () => {}; engine.journal.heartbeatCleanup = async () => {};
+  engine.journal.finishCleanup = async (id) => { completed.push(id); };
+  await engine.reconcile();
+  assert.deepEqual(claimed, { finite: 8, recurring: 2 });
+  assert.equal(completed.filter((id) => id.startsWith('finite')).length, 8);
+  assert.equal(completed.filter((id) => id.startsWith('recurring')).length, 2);
+});
+
+test('cleanup spanning more than ninety seconds renews its lease and finalizes once', async () => {
+  const state = persistence(); let tick: () => void; const originalInterval = globalThis.setInterval;
+  const originalClear = globalThis.clearInterval;
+  (globalThis as any).setInterval = (fn: () => void) => { tick = fn; return { unref() {} }; };
+  (globalThis as any).clearInterval = () => {};
+  const row = { id: 'slow-row', state: 'pending', recurring: false, lease_owner: 'owner', lease_until: state.now() + 90_000,
+    objects: [{ key: 'one' }, { key: 'two' }, { key: 'three' }] };
+  state.tables[MEDIA_CLEANUP_TABLE].push(row);
+  let claimed = false; let removals = 0; let renewals = 0;
+  const engine = new MediaRecovery({ db: { connection: state.db }, log: { warn(message: string) { assert.fail(message); } } }, {
+    remove: async (_object: any, assertLease: () => Promise<void>) => {
+      for (let request = 0; request < 3; request++) {
+        await assertLease(); state.advance(20_000); tick!(); await new Promise((resolve) => setImmediate(resolve));
+      }
+      removals++;
+    }, close() {},
+  } as any);
+  engine.batches.claimExpired = async () => undefined; engine.journal.claimExpired = async () => undefined;
+  engine.journal.claimCleanup = async (_key, recurring) => { if (claimed || recurring) return undefined; claimed = true; return row; };
+  const heartbeat = engine.journal.heartbeatCleanup.bind(engine.journal);
+  engine.journal.heartbeatCleanup = async (...args) => { renewals++; return heartbeat(...args); };
+  try {
+    await engine.reconcile(); assert.equal(removals, 3); assert.equal(renewals, 9);
+    assert.ok(state.now() > 90_000); assert.equal(state.tables[MEDIA_CLEANUP_TABLE].length, 0);
+  } finally { await engine.stop(); globalThis.setInterval = originalInterval; globalThis.clearInterval = originalClear; }
 });

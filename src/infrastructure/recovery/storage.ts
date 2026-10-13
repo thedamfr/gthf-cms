@@ -15,7 +15,7 @@ export interface RecoveryStorage {
   url(key: string): string;
   put(object: StoredObject, bytes: Buffer | string): Promise<void>;
   exists(object: StoredObject): Promise<boolean>;
-  remove(object: StoredObject): Promise<void>;
+  remove(object: StoredObject, assertLease?: () => Promise<void>): Promise<void>;
   close(): void;
 }
 /** Single PUT, bounded to the configured 10MB file limit: no abandoned multipart session. */
@@ -68,7 +68,8 @@ export function createRecoveryStorage(config: any): RecoveryStorage {
       if (!await exists(object)) throw new Error('Media upload was not durable');
     },
     exists,
-    async remove(object) {
+    async remove(object, assertLease = async () => {}) {
+      await assertLease();
       if (object.sha256) {
         try { if (!await exists(object)) return; }
         catch (error) {
@@ -78,7 +79,9 @@ export function createRecoveryStorage(config: any): RecoveryStorage {
           throw error;
         }
       }
+      await assertLease();
       await send(new DeleteObjectCommand({ Bucket: bucket, Key: object.key }));
+      await assertLease();
       if (await exists({ key: object.key })) throw new Error('Media cleanup is not yet confirmed');
     },
     close() { client.destroy(); },

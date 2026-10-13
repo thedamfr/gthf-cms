@@ -186,7 +186,7 @@ export class MediaJournal {
       return operationRow(claimed);
     });
   }
-  async claimCleanup(operationKey?: string) {
+  async claimCleanup(operationKey?: string, recurring?: boolean) {
     return this.db.transaction(async (trx) => {
       const fileTable = this.strapi.db.metadata.get(FILE_UID).tableName;
       const query = trx(MEDIA_CLEANUP_TABLE).where({ state: 'pending' }).where('not_before', '<=', trx.fn.now())
@@ -194,12 +194,24 @@ export class MediaJournal {
         .andWhere((q) => q.whereNull('retain_file_id').orWhereNotExists(trx.select(1).from(fileTable)
           .whereColumn(`${fileTable}.id`, `${MEDIA_CLEANUP_TABLE}.retain_file_id`)));
       if (operationKey) query.where({ operation_key: operationKey });
+      if (recurring !== undefined) query.where({ recurring });
       const row = await query.orderBy('not_before').orderBy('created_at').forUpdate().skipLocked().first();
       if (!row) return undefined;
       const [claimed] = await trx(MEDIA_CLEANUP_TABLE).where({ id: row.id }).update({ lease_owner: randomUUID(),
         lease_until: this.lease(trx), updated_at: trx.fn.now() }).returning('*');
       return { ...claimed, objects: json(claimed.objects) };
     });
+  }
+  async assertCleanupLease(id: string, leaseOwner: string) {
+    const row = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner, state: 'pending' })
+      .where('lease_until', '>', this.db.raw('clock_timestamp()')).first();
+    if (!row) throw new RecoveryError(409, 'CLEANUP_LEASE_LOST', 'Cleanup will be resumed');
+  }
+  async heartbeatCleanup(id: string, leaseOwner: string) {
+    const count = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner, state: 'pending' })
+      .where('lease_until', '>', this.db.raw('clock_timestamp()'))
+      .update({ lease_until: this.lease(this.db), updated_at: this.db.fn.now() });
+    if (!count) throw new RecoveryError(409, 'CLEANUP_LEASE_LOST', 'Cleanup will be resumed');
   }
   async finishCleanup(id: string, leaseOwner: string) {
     const claimed = () => this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner })
