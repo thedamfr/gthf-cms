@@ -1,6 +1,6 @@
 import { mediaVersion } from './prepare';
 import { randomUUID } from 'node:crypto';
-import { Actor, FILE_UID, LEASE_MS, Manifest, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, Operation, OperationKind, RecoveryError, StoredObject } from './types';
+import { Actor, FILE_UID, LEASE_MS, INTERRUPTED_SWEEP_MS, Manifest, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, Operation, OperationKind, RecoveryError, StoredObject } from './types';
 
 // Strapi disables pg's JSONB parser globally. These private Knex tables bypass
 // Strapi's model-field decoder, so decode only their JSON columns at read time.
@@ -43,6 +43,9 @@ export class MediaJournal {
           table.timestamp('updated_at', { useTz: true }).notNullable().defaultTo(trx.fn.now());
           table.index(['state', 'not_before', 'lease_until']);
         });
+      }
+      if (!await trx.schema.hasColumn(MEDIA_CLEANUP_TABLE, 'recurring')) {
+        await trx.schema.alterTable(MEDIA_CLEANUP_TABLE, (table) => table.boolean('recurring').notNullable().defaultTo(false));
       }
     });
   }
@@ -99,16 +102,16 @@ export class MediaJournal {
     });
     operation.manifest = manifest; operation.state = 'prepared';
   }
-  private async queueCleanup(trx: any, operation: Operation, objects: StoredObject[], delayMs = 0) {
+  private async queueCleanup(trx: any, operation: Operation, objects: StoredObject[], delayMs = 0, recurring = false) {
     if (!objects.length) return;
     await trx(MEDIA_CLEANUP_TABLE).insert({ id: randomUUID(), operation_key: operation.key, attempt: operation.attempt,
-      objects: JSON.stringify(objects), not_before: trx.raw("clock_timestamp() + (? * interval '1 millisecond')", [delayMs]) });
+      objects: JSON.stringify(objects), recurring, not_before: trx.raw("clock_timestamp() + (? * interval '1 millisecond')", [delayMs]) });
   }
   async interrupt(operation: Operation, permanent = false, reason = 'TRANSFER_INTERRUPTED') {
     await this.db.transaction(async (trx) => {
       await trx(MEDIA_OPERATION_TABLE).where({ key: operation.key }).forUpdate().first();
       const row = await this.assertLease(operation, trx);
-      await this.queueCleanup(trx, row, row.manifest?.objects || []);
+      await this.queueCleanup(trx, row, row.manifest?.objects || [], 0, true);
       await trx(MEDIA_OPERATION_TABLE).where({ key: operation.key }).update({
         state: permanent ? 'failed' : 'interrupted', failure: reason, lease_owner: null, lease_until: null, updated_at: trx.fn.now(),
       });
@@ -165,7 +168,7 @@ export class MediaJournal {
     return this.db.transaction(async (trx) => {
       const row = await trx(MEDIA_CLEANUP_TABLE).where({ state: 'pending' }).where('not_before', '<=', trx.fn.now())
         .andWhere((q) => q.whereNull('lease_until').orWhere('lease_until', '<=', trx.fn.now()))
-        .orderBy('created_at').forUpdate().skipLocked().first();
+        .orderBy('not_before').orderBy('created_at').forUpdate().skipLocked().first();
       if (!row) return undefined;
       const [claimed] = await trx(MEDIA_CLEANUP_TABLE).where({ id: row.id }).update({ lease_owner: randomUUID(),
         lease_until: this.lease(trx), updated_at: trx.fn.now() }).returning('*');
@@ -173,8 +176,16 @@ export class MediaJournal {
     });
   }
   async finishCleanup(id: string, leaseOwner: string) {
-    const count = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner }).where('lease_until', '>', this.db.raw('clock_timestamp()'))
-      .delete();
+    const claimed = () => this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner })
+      .where('lease_until', '>', this.db.raw('clock_timestamp()'));
+    // An aborted client cannot prove that the server will not finish an earlier
+    // PUT later. Retain these immutable-key tombstones and inspect them again.
+    const recurring = await claimed().where({ recurring: true }).update({
+      not_before: this.db.raw("clock_timestamp() + (? * interval '1 millisecond')", [INTERRUPTED_SWEEP_MS]),
+      lease_owner: null, lease_until: null, updated_at: this.db.fn.now(),
+    });
+    if (recurring) return;
+    const count = await claimed().where({ recurring: false }).delete();
     if (!count) throw new RecoveryError(409, 'CLEANUP_LEASE_LOST', 'Cleanup will be resumed');
   }
 }

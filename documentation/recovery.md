@@ -20,7 +20,10 @@ tentatives : un réessai ne peut pas écraser une modification concurrente. Le j
 par tentative. Les originaux et variantes sont hashés et déposés dans un répertoire
 temporaire privé, puis envoyés en flux après journalisation : les corps du lot ne
 sont pas conservés ensemble dans le heap. Ce spool est supprimé après traitement ;
-les anciens objets ne sont nettoyés qu’après validation SQL.
+les anciens objets ne sont nettoyés qu’après validation SQL. Les clés de tentatives
+interrompues restent surveillées durablement : un PUT dont la réponse a expiré peut
+encore aboutir côté S3 après une première vérification d’absence. Ce suivi implique
+des lectures S3 récurrentes et une croissance du journal, explicitées ci-dessous.
 
 Le résultat public d’une opération est `pending`, `committed`, `interrupted` ou
 `failed`. Une opération complète côté stockage peut être finalisée après redémarrage.
@@ -95,8 +98,17 @@ Strapi désactive le parseur JSONB PostgreSQL : le journal décode donc explicit
 ses trois colonnes JSON privées, sans modifier le parseur global.
 
 Les objets étrangers détectés par checksum sont préservés et l’opération échoue
-explicitement ; le nettoyage ne détruit jamais ces collisions. Les lignes de
-nettoyage terminées sont retirées, tandis que les reçus durables sont conservés.
+explicitement ; le nettoyage ne détruit jamais ces collisions. Les nettoyages d’anciens objets committés sont retirés après vérification, tandis que
+les reçus restent conservés. Les clés abandonnées (y compris après révocation des
+droits) gardent une ligne `recurring=true`, état `pending`, sans bail entre deux
+contrôles : une première absence ne prouve pas qu’un PUT serveur ne finira pas plus tard.
+Après chaque balayage, la prochaine vérification est planifiée à 60 secondes, puis
+prise par le cycle de 15 secondes. Le budget reste huit nettoyages par cycle, triés
+par échéance : une file plus longue allonge la redétection. Chaque clé nécessite au
+moins un HEAD par balayage ; un objet tardif possédé ajoute DELETE puis HEAD. Le coût
+et le volume de ces suivis augmentent donc avec les tentatives interrompues. Ils ne
+sont pas purgés automatiquement faute de borne attestée de terminaison du PUT serveur.
+Les nouvelles tentatives ont d’autres clés ; les collisions étrangères restent intactes.
 Les objets remplacés restent disponibles dix minutes pour les pages encore en cache ;
 le délai de reprise métier de 300 secondes n’abrège pas cette rétention.
 

@@ -48,9 +48,15 @@ export async function executeIntent(intent: MediaIntent, dependencies: {
       catch (error: any) {
         const status = error.status || error.response?.status;
         const code = error.code || error.response?.data?.error?.name;
-        if (status === 401 || status === 403 || (status === 409 && code && code !== 'OPERATION_PENDING' && code !== 'OPERATION_LEASE_LOST')) {
-          // Permission loss or payload conflict cannot change the durable outcome of
-          // an earlier attempt. Keep its identity for later authorised consultation.
+        if (status === 409 && code && code !== 'OPERATION_PENDING' && code !== 'OPERATION_LEASE_LOST') {
+          // This payload cannot use the key. Never reconcile it against a receipt
+          // belonging to a different payload when the recovery page is reloaded.
+          intent.status = 'failed'; intent.message = code; dependencies.save(intent);
+          throw error;
+        }
+        if (status === 401 || status === 403) {
+          // Permission loss does not change the outcome of an earlier request.
+          // Keep its identity for later authorised consultation.
           throw error;
         }
         rejection = [400, 413, 415].includes(status) ? error : undefined;

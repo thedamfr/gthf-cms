@@ -139,6 +139,26 @@ async function main() {
     assert.equal(refusedRetry.operation.failure, 'MEDIA_CHANGED');
     assert.equal((await journal.get(replacement.key)).attempt, operation.attempt);
     checks.push('retrying an interrupted key cannot re-baseline a concurrently edited target');
+    checkpoint('interrupted object cleanup retains its immutable keys after an empty sweep');
+    const cleanupInput = { ...input, key: randomUUID() }; keys.push(cleanupInput.key);
+    const cleanupOperation = (await journal.begin(cleanupInput)).operation;
+    const abandonedObject = { key: `qualification/${cleanupInput.key}.txt`, sha256: sha256('fixture'), bytes: 7 };
+    await journal.prepare(cleanupOperation, { files: [], objects: [abandonedObject], obsolete: [] });
+    await journal.interrupt(cleanupOperation);
+    const cleanup = await journal.claimCleanup();
+    assert.equal(cleanup.operation_key, cleanupInput.key);
+    assert.equal(cleanup.recurring, true);
+    assert.deepEqual(cleanup.objects, [abandonedObject]);
+    await journal.finishCleanup(cleanup.id, cleanup.lease_owner);
+    const retained = await db(MEDIA_CLEANUP_TABLE).where({ id: cleanup.id }).first();
+    assert.equal(retained.state, 'pending');
+    assert.equal(retained.lease_owner, null);
+    assert.ok(new Date(retained.not_before).getTime() > Date.now());
+    await db(MEDIA_CLEANUP_TABLE).where({ id: cleanup.id }).update({ not_before: db.raw("clock_timestamp() - interval '1 second'") });
+    const sweptAgain = await journal.claimCleanup();
+    assert.equal(sweptAgain.id, cleanup.id);
+    assert.notEqual(sweptAgain.lease_owner, cleanup.lease_owner);
+    checks.push('abandoned immutable object keys survive a completed sweep and are claimed again');
     process.stdout.write(JSON.stringify({ status: 'passed', campaign, revision: process.env.GTHF_REVISION || 'development', checkedAt: new Date().toISOString(), checks }, null, 2) + '\n');
   } catch (error: any) { error.recoveryStage = stage; throw error; } finally {
     checkpoint('remove only this test invocation and shut down');

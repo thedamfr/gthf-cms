@@ -30,10 +30,12 @@ test('losing permission preserves the unresolved intent for later authorised con
   assert.equal(intent.status, 'pending'); assert.equal(reads, 0);
 });
 test('a reused key with different bytes is never converted into the older successful result', async () => {
-  const intent = makeIntent(); let reads = 0;
+  const intent = makeIntent(); let reads = 0; const stored: MediaIntent[] = [];
   await assert.rejects(executeIntent(intent, { ...clock(), transport: async () => { throw Object.assign(new Error('different bytes'), { status: 409, code: 'IDEMPOTENCY_CONFLICT' }); },
-    receipt: async () => { reads++; return { key, status: 'committed', result: [{ id: 1 }] }; }, save: () => {} }), /different bytes/);
+    receipt: async () => { reads++; return { key, status: 'committed', result: [{ id: 1 }] }; }, save: (value) => stored.push(structuredClone(value)) }), /different bytes/);
   assert.equal(reads, 0);
+  assert.equal(stored.at(-1)?.status, 'failed');
+  assert.equal(stored.at(-1)?.message, 'IDEMPOTENCY_CONFLICT');
 });
 test('explicit server failure stays failed and cannot be retried automatically', async () => {
   const intent = makeIntent(); let writes = 0;
