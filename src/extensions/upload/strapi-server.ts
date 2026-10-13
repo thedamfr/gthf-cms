@@ -1,0 +1,101 @@
+import { MediaRecovery, actorFor, operationKey } from '../../infrastructure/recovery/engine';
+import { createRecoveryStorage } from '../../infrastructure/recovery/storage';
+import { FILE_UID, Operation, RecoveryError } from '../../infrastructure/recovery/types';
+
+// Private extension contracts are deliberately pinned and checked by tests/build.
+const EXPECTED_STRAPI = '5.52.3';
+let recovery: MediaRecovery;
+let application: any;
+async function permissions(ctx: any, operation: Operation) {
+  const pm = application.service('admin::permission').createPermissionsManager({ ability: ctx.state.userAbility,
+    action: operation.kind === 'upload' ? 'plugin::upload.assets.create' : 'plugin::upload.assets.update', model: FILE_UID });
+  if (!pm.isAllowed) throw new RecoveryError(403, 'FORBIDDEN', 'Media operation access denied');
+  for (const plan of operation.manifest?.files || []) {
+    const subject = plan.permissionSubject || { ...plan.values, createdBy: operation.admin_user_id };
+    const creator = subject.createdBy?.id ?? subject.createdBy;
+    const author = creator ? await application.service('admin::user').findOne(creator, ['roles']) : null;
+    if (pm.ability.cannot(pm.action, pm.toSubject({ ...subject, createdBy: author }))) {
+      throw new RecoveryError(403, 'FORBIDDEN', 'Media operation access denied');
+    }
+  }
+  return pm;
+}
+export default (plugin: any) => {
+  const version = require('@strapi/upload/package.json').version;
+  if (version !== EXPECTED_STRAPI) throw new Error(`Media recovery requires reviewed Strapi upload ${EXPECTED_STRAPI}`);
+  const createOriginal = plugin.services.upload;
+  plugin.services.upload = (context: any) => {
+    const original = createOriginal(context);
+    return { ...original,
+      upload: (request: any, opts?: any) => recovery.upload(original, request, opts),
+      replace: (id: number, request: any, opts?: any) => recovery.replace(original, Number(id), request, opts),
+      remove: (file: any) => recovery.remove(original, file),
+    };
+  };
+  const bootstrap = plugin.bootstrap;
+  plugin.bootstrap = async (context: any) => {
+    application = context.strapi;
+    if (bootstrap) await bootstrap(context);
+    if (context.strapi.config.get('database.connection.client') !== 'postgres') throw new Error('Media recovery requires PostgreSQL');
+    recovery = new MediaRecovery(context.strapi, createRecoveryStorage(context.strapi.config.get('plugin::upload')));
+    await recovery.start();
+  };
+  const destroy = plugin.destroy;
+  plugin.destroy = async (context: any) => { await recovery?.stop(); if (destroy) await destroy(context); };
+  plugin.controllers.recovery = {
+    async find(ctx: any) {
+      const actor = actorFor(ctx);
+      const operation = await recovery.journal.getOwned(operationKey(ctx.params.key), actor.id);
+      const pm = await permissions(ctx, operation);
+      const receipt = await recovery.receipt(operation.key, actor.id);
+      if (receipt.result) receipt.result = await pm.sanitizeOutput(receipt.result, { action: 'plugin::upload.read' });
+      ctx.set('Cache-Control', 'no-store, max-age=0');
+      ctx.body = receipt;
+    },
+  };
+  plugin.routes.admin.routes.push({ method: 'GET', path: '/recovery/operations/:key', handler: 'recovery.find',
+    config: { policies: ['admin::isAuthenticatedAdmin'] } });
+  // A successful DELETE replay has no remaining file for Strapi's normal lookup.
+  // Recheck the current conditional permission against the saved subject first.
+  const destroyFile = plugin.controllers['admin-file'].destroy;
+  plugin.controllers['admin-file'].destroy = async function (ctx: any) {
+    const header = ctx.get('Idempotency-Key');
+    if (header) {
+      const key = operationKey(header);
+      const previous = await recovery.journal.get(key);
+      if (previous) {
+        const owned = await recovery.journal.getOwned(key, actorFor(ctx).id);
+        if (owned.kind !== 'delete' || owned.target_id !== Number(ctx.params.id)) throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key belongs to a different request');
+        if (owned.state === 'committed') {
+          const pm = await permissions(ctx, owned);
+          ctx.set('Idempotency-Key', key);
+          ctx.body = await pm.sanitizeOutput(owned.receipt, { action: 'plugin::upload.read' });
+          return;
+        }
+      }
+    }
+    return destroyFile.call(this, ctx);
+  };
+  const wrap = (controller: any) => {
+    for (const [name, action] of Object.entries(controller)) {
+      if (typeof action !== 'function') continue;
+      controller[name] = async function (ctx: any, ...args: any[]) {
+        try { return await action.call(this, ctx, ...args); }
+        catch (error) {
+          if (!(error instanceof RecoveryError)) throw error;
+          ctx.status = error.status;
+          ctx.set('Cache-Control', 'no-store, max-age=0');
+          ctx.body = { data: null, error: { status: error.status, name: error.code, message: error.message,
+            details: { operationKey: ctx.response.get('Idempotency-Key') || undefined } } };
+        }
+      };
+    }
+    return controller;
+  };
+  // Content API controllers are factories; admin controllers are plain objects.
+  for (const [name, controller] of Object.entries(plugin.controllers)) {
+    plugin.controllers[name] = typeof controller === 'function'
+      ? (...args: any[]) => wrap(controller(...args)) : wrap(controller);
+  }
+  return plugin;
+};
