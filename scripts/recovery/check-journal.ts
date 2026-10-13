@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createStrapi } from '@strapi/strapi';
-import { stopRecoveryForJournalQualification } from '../../src/extensions/upload/strapi-server';
 import { MediaJournal } from '../../src/infrastructure/recovery/journal';
 import { FILE_UID, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE } from '../../src/infrastructure/recovery/types';
 import { mediaVersion } from '../../src/infrastructure/recovery/prepare';
@@ -36,6 +35,9 @@ async function main() {
   const hashes: string[] = [];
   const checks: string[] = [];
   try {
+    // Strapi's load-files clears require.cache while loading extensions. Resolve
+    // the helper after load(), otherwise a static import retains a stale instance.
+    const { stopRecoveryForJournalQualification } = require('../../src/extensions/upload/strapi-server');
     await stopRecoveryForJournalQualification();
     checkpoint('concurrent claim and actor separation');
     const input = { key: randomUUID(), actor, kind: 'upload' as const, requestHash: sha256(randomUUID()) };
