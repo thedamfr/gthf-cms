@@ -47,7 +47,8 @@
     "test:delivery": "tsx --test tests/delivery-staging.test.ts tests/release-health.test.ts tests/schema-lock.test.ts",
     "delivery:staging:prepare": "node scripts/prepare-delivery-staging.mjs",
     "test:e2e": "node ../gthf-frontend/infrastructure/delivery/recipe.mjs",
-    "test:recovery:journal": "node dist/scripts/recovery/check-journal.js"
+    "test:recovery:journal": "node dist/scripts/recovery/check-journal.js",
+    "test:e2e:media-admin": "node scripts/recovery/media-admin.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1023.0",

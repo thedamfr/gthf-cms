@@ -7,6 +7,15 @@ import { FILE_UID, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE } from '../../src/
 import { mediaVersion } from '../../src/infrastructure/recovery/prepare';
 import { sha256 } from '../../src/infrastructure/recovery/storage';
 
+let stage = 'isolated guards';
+function checkpoint(value: string) { stage = value; process.stdout.write(`Journal qualification: ${value}\n`); }
+function safeFailure(error: any) {
+  let text = String(error.stack || `${error.name}: ${error.message}`).split('\n').slice(0, 12).join('\n');
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && value.length >= 4 && /SECRET|TOKEN|PASSWORD|KEY|URI|URL/.test(key)) text = text.split(value).join('[redacted]');
+  }
+  return text.replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, 'Bearer [redacted]').slice(0, 4000);
+}
 async function main() {
   const campaign = process.env.GTHF_RECOVERY_CAMPAIGN || '';
   assert.match(campaign, /^[a-f0-9-]{36}$/i);
@@ -15,10 +24,11 @@ async function main() {
   for (const name of ['DATABASE_URL', 'POSTGRESQL_ADDON_URI', 'POSTGRESQL_ADDON_HOST', 'POSTGRESQL_ADDON_DB']) {
     assert.equal(Boolean(process.env[name]), false, `${name} must not override the synthetic database`);
   }
+  checkpoint('Strapi bootstrap');
   const application = await createStrapi({ appDir: process.cwd(), distDir: `${process.cwd()}/dist` }).load();
   // Its bootstrap starts a normal reconciler. Drain only this test process
   // before deliberately expiring leases; long-lived CMS pods must not run yet.
-  await stopRecoveryForJournalQualification();
+  checkpoint('drain the journal-check process worker');
   const db = application.db.connection;
   const journal = new MediaJournal(application);
   const actor = { id: `qualification:${campaign}` };
@@ -26,6 +36,8 @@ async function main() {
   const hashes: string[] = [];
   const checks: string[] = [];
   try {
+    await stopRecoveryForJournalQualification();
+    checkpoint('concurrent claim and actor separation');
     const input = { key: randomUUID(), actor, kind: 'upload' as const, requestHash: sha256(randomUUID()) };
     keys.push(input.key);
     const first = await journal.begin(input);
@@ -35,6 +47,7 @@ async function main() {
     await assert.rejects(journal.getOwned(input.key, 'qualification:another-actor'), (error: any) => error.status === 404);
     checks.push('concurrent claim, immutable request fingerprint and actor separation');
 
+    checkpoint('expired lease fencing');
     await db(MEDIA_OPERATION_TABLE).where({ key: input.key }).update({ lease_until: db.raw("clock_timestamp() - interval '1 second'") });
     const recovered = await journal.claimExpired(input.key);
     assert.ok(recovered, 'this isolated test must claim its expired operation');
@@ -43,6 +56,7 @@ async function main() {
     await assert.rejects(journal.assertLease(first.operation), (error: any) => error.code === 'OPERATION_LEASE_LOST');
     checks.push('a previous request is fenced when the same process recovers its expired lease');
 
+    checkpoint('real SQL rollback after file insertion');
     const hash = `gthf_journal_test_${randomUUID().replace(/-/g, '')}`;
     hashes.push(hash);
     const manifest = { files: [{ values: { name: 'isolated journal fixture', hash, ext: '.txt', mime: 'text/plain', size: 0.001,
@@ -61,6 +75,7 @@ async function main() {
     assert.equal((await journal.get(input.key)).state, 'prepared');
     checks.push('a real file INSERT rolls back with the receipt when the transaction fails');
 
+    checkpoint('durable commit and receipt replay');
     const result = await journal.commit(recovered);
     const replay = await journal.begin(input);
     assert.equal(replay.acquired, false);
@@ -69,6 +84,7 @@ async function main() {
     assert.equal(await application.db.query(FILE_UID).count({ where: { hash } }), 1);
     checks.push('commit followed by a lost response reuses one durable receipt and one file');
 
+    checkpoint('fresh attempt after interrupted intent');
     const next = { ...input, key: randomUUID() }; keys.push(next.key);
     const pending = (await journal.begin(next)).operation;
     await journal.interrupt(pending);
@@ -78,6 +94,7 @@ async function main() {
     await assert.rejects(journal.heartbeat(pending), (error: any) => error.code === 'OPERATION_LEASE_LOST');
     checks.push('an interrupted intent gets fresh immutable attempt keys and fences the old writer');
 
+    checkpoint('concurrent editorial update refuses replacement');
     const current = await application.db.query(FILE_UID).findOne({ where: { hash } });
     const replacement = { key: randomUUID(), actor, kind: 'replace' as const, requestHash: sha256(randomUUID()), targetId: current.id, targetVersion: mediaVersion(current) };
     keys.push(replacement.key);
@@ -88,6 +105,7 @@ async function main() {
     await assert.rejects(journal.commit(operation), (error: any) => error.code === 'MEDIA_CHANGED');
     assert.equal((await application.db.query(FILE_UID).findOne({ where: { id: current.id } })).name, 'concurrent editorial change');
     checks.push('a concurrent editorial update prevents a stale replacement commit');
+    checkpoint('retry cannot change its initial target version');
     await journal.interrupt(operation);
     const changed = await application.db.query(FILE_UID).findOne({ where: { id: current.id } });
     const refusedRetry = await journal.begin({ ...replacement, targetVersion: mediaVersion(changed) });
@@ -97,7 +115,8 @@ async function main() {
     assert.equal((await journal.get(replacement.key)).attempt, operation.attempt);
     checks.push('retrying an interrupted key cannot re-baseline a concurrently edited target');
     process.stdout.write(JSON.stringify({ status: 'passed', campaign, revision: process.env.GTHF_REVISION || 'development', checkedAt: new Date().toISOString(), checks }, null, 2) + '\n');
-  } finally {
+  } catch (error: any) { error.recoveryStage = stage; throw error; } finally {
+    checkpoint('remove only this test invocation and shut down');
     // Only the UUIDs and file hashes generated by this invocation are removed.
     for (const hash of hashes) await application.db.query(FILE_UID).deleteMany({ where: { hash } });
     if (keys.length) {
@@ -107,4 +126,4 @@ async function main() {
     await application.destroy();
   }
 }
-main().catch((error) => { process.stderr.write(`Isolated journal check failed: ${error.name}\n`); process.exitCode = 1; });
+main().catch((error) => { process.stderr.write(`Isolated journal check failed at ${error.recoveryStage || stage}:\n${safeFailure(error)}\n`); process.exitCode = 1; });

@@ -88,6 +88,27 @@ frontend voisin. La campagne isolée et ses preuves de SIGKILL, réponse perdue,
 indisponibilité des dépendances et deuxième crash sont en préparation. Elles doivent
 indiquer les SHA CMS/frontend, les délais, les permissions et les limites.
 
+### Golden Journey navigateur admin
+
+Avec le CMS du manifeste déjà prêt et son tunnel loopback ouvert par le contrôleur :
+
+```sh
+npm run test:e2e:media-admin -- --campaign UUID --manifest /CHEMIN/PRIVE/manifest.json
+```
+
+Le script exige un checkout propre, la campagne VM synthétique et la révision CMS
+exacte. Il utilise Playwright installé sur l’hôte, Chromium avec sandbox, le seul
+CMS `127.0.0.1:33137` et MinIO `127.0.0.1:33190`. Les identifiants synthétiques sont
+lus dans `credentials.json` à côté du manifeste, jamais affichés. Les rapports,
+traces et captures restent privés sous le répertoire de campagne.
+
+Les interactions réelles sélectionnent deux fois le même fichier avec deux UUID,
+reprennent un transfert interrompu avec le même UUID, puis rechargent la page des
+reçus après une réponse de commit perdue. Ces pertes réseau sont simulées dans
+Playwright et restent distinctes des vrais SIGKILL/coupures QEMU de la campagne.
+Aucune coupure VM n’est effectuée par cette commande. Les médias synthétiques
+créés restent conservés pour les vérifications SQL/S3 et le nettoyage final du banc.
+
 ### Protocole des pauses de qualification
 
 Les six paramètres sont obligatoires ensemble :
