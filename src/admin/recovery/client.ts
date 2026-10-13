@@ -23,7 +23,7 @@ export async function fetchReceipt(key: string) {
   try {
     const { data } = await getFetchClient().get<MediaReceipt>(`/upload/recovery/operations/${encodeURIComponent(key)}`, { signal: AbortSignal.timeout(5000) });
     return data;
-  } catch (error: any) { if (error.response?.status === 404) return null; throw error; }
+  } catch (error: any) { if ((error.status ?? error.response?.status) === 404) return null; throw error; }
 }
 async function currentOwner() {
   const { data } = await getFetchClient().get<{ data?: { id?: number }; id?: number }>('/admin/users/me', { signal: AbortSignal.timeout(5000) });

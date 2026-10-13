@@ -47,7 +47,7 @@ export async function executeIntent(intent: MediaIntent, dependencies: {
       try { return done(await dependencies.transport(intent.key)); }
       catch (error: any) {
         const status = error.status || error.response?.status;
-        const code = error.code || error.response?.data?.error?.name;
+        const code = error.response?.data?.error?.name || (typeof error.code === 'string' ? error.code : undefined);
         if (status === 409 && code && code !== 'OPERATION_PENDING' && code !== 'OPERATION_LEASE_LOST') {
           // This payload cannot use the key. Never reconcile it against a receipt
           // belonging to a different payload when the recovery page is reloaded.
