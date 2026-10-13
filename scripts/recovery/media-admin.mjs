@@ -96,7 +96,7 @@ try {
   await page.goto(CMS + '/admin/auth/login');
   await page.getByLabel(/email/i).fill('recovery@gthf.invalid');
   await page.getByLabel(/password/i).fill(credentials.RECOVERY_ADMIN_PASSWORD);
-  await page.getByRole('button', { name: /log in|se connecter/i }).click();
+  await page.getByRole('button', { name: /log\s*in|se connecter/i }).click();
   await page.waitForURL((url) => url.pathname.startsWith('/admin') && !url.pathname.includes('/auth/'));
   await context.tracing.start({ screenshots: true, snapshots: true, sources: false }); tracing = true;
   const filename = 'recovery-browser-' + randomUUID() + '.png';
@@ -152,7 +152,12 @@ try {
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.failedStep = step; report.errorType = error.name;
-  // Credentials and HTTP headers may occur in browser errors: keep them out of stdout/reports.
+  // Credentials and HTTP headers may occur in browser errors: keep diagnostics private and redacted.
+  let detail = String(error.stack || error.name).slice(0, 8000);
+  for (const value of Object.values(credentials)) if (typeof value === 'string' && value.length >= 8) detail = detail.split(value).join('[redacted]');
+  detail = detail.replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, 'Bearer [redacted]');
+  await fs.writeFile(path.join(directory, 'failure.txt'), detail + '\n', { mode: 0o600 });
+  if (page) await page.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {});
   process.exitCode = 1;
 } finally {
   if (tracing) await context.tracing.stop({ path: path.join(directory, 'trace.zip') }).catch(() => {});
