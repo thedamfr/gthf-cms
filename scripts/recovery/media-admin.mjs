@@ -50,10 +50,11 @@ const report = { status: 'running', campaignId: values.campaign, sourceRevision,
     'Created synthetic media remain in the campaign for cross-checking and final isolated cleanup.',
   ] };
 let browser; let context; let page; let tracing = false; let step = 'identity and readiness';
+let routeFailure;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(read, predicate, timeout = 60_000) {
   const end = Date.now() + timeout;
-  while (Date.now() < end) { const value = await read(); if (predicate(value)) return value; await pause(200); }
+  while (Date.now() < end) { if (routeFailure) throw routeFailure; const value = await read(); if (predicate(value)) return value; await pause(200); }
   throw new Error('Golden Journey condition timed out');
 }
 let mode = 'normal'; let intercepted = false; let blockReceipts = false;
@@ -65,7 +66,26 @@ try {
   const { chromium } = await import('/home/ubuntu/.local/share/agent-web-tools/node_modules/playwright/index.mjs');
   browser = await chromium.launch({ channel: 'chromium', headless: true, chromiumSandbox: true });
   context = await browser.newContext({ locale: 'en-US', viewport: { width: 1360, height: 980 } });
-  await context.route('**/*', async (route) => {
+  // Preserve the browser's actual multipart request without reconstructing its
+  // body through route.fetch. Reject only after its real successful response,
+  // before the admin client can read the acknowledgment.
+  await context.addInitScript(({ origin }) => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, options) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = (options?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      const hide = window.__gthfLoseNextUpload && url.origin === origin
+        && method === 'POST' && /^\/upload(?:\/files)?$/.test(url.pathname);
+      if (hide) window.__gthfLoseNextUpload = false;
+      const response = await nativeFetch(input, options);
+      if (hide) {
+        window.__gthfHiddenUpload = { status: response.status, body: await response.clone().json() };
+        if (response.ok) throw new TypeError('Synthetic response loss after successful media commit');
+      }
+      return response;
+    };
+  }, { origin: CMS });
+  const handleRoute = async (route) => {
     const request = route.request(); const url = new URL(request.url());
     if (url.origin === 'http://minio:9000' && url.pathname.startsWith('/' + manifest.bucket + '/')) {
       return route.continue({ url: MEDIA + url.pathname + url.search });
@@ -80,15 +100,16 @@ try {
       assert.match(key || '', UUID, 'A real admin mutation must carry its saved identity');
       requests.push({ key, mode });
       if (!intercepted && mode === 'before-send') { intercepted = true; return route.abort('connectionreset'); }
-      if (!intercepted && mode === 'after-commit') {
-        intercepted = true;
-        const response = await route.fetch();
-        assert.ok(response.ok(), 'The hidden response must have committed successfully');
-        capturedCommit = await response.json();
-        return route.abort('connectionreset');
-      }
+
     }
     return route.continue();
+  };
+  await context.route('**/*', async (route) => {
+    try { await handleRoute(route); }
+    catch (error) {
+      routeFailure = error;
+      await route.abort('failed').catch(() => {});
+    }
   });
   page = await context.newPage();
   page.setDefaultTimeout(30_000);
@@ -109,6 +130,7 @@ try {
     .flatMap((key) => JSON.parse(sessionStorage.getItem(key))).map(({ key, status, files }) => ({ key, status, files })));
   const selectNew = async () => {
     await page.goto(CMS + '/admin/plugins/upload');
+    await page.evaluate((hide) => { window.__gthfLoseNextUpload = hide; }, mode === 'after-commit');
     await page.getByRole('button', { name: /add new assets|ajouter.*médias/i }).first().click();
     await page.locator('input[type=file]').first().setInputFiles(fixture);
     await page.getByRole('button', { name: /upload.*library|téléverser.*médiathèque/i }).click();
@@ -135,7 +157,9 @@ try {
   mode = 'after-commit'; intercepted = false; capturedCommit = undefined; blockReceipts = true;
   const lostStart = requests.length;
   await selectNew(); const lostKey = await nextKey(lostStart);
-  await until(() => capturedCommit, Boolean);
+  const hidden = await until(() => page.evaluate(() => window.__gthfHiddenUpload), Boolean);
+  assert.ok(hidden.status >= 200 && hidden.status < 300, 'Hidden browser upload HTTP ' + hidden.status);
+  capturedCommit = hidden.body;
   const persisted = await intents(); assert.ok(persisted.some((row) => row.key === lostKey));
   // Reload discards in-memory transport state while preserving the actual sessionStorage intent.
   blockReceipts = false;
@@ -148,7 +172,7 @@ try {
   await page.screenshot({ path: path.join(directory, 'receipts.png'), fullPage: true });
   const ids = (Array.isArray(capturedCommit) ? capturedCommit : [capturedCommit]).map((file) => file.id);
   assert.ok(ids.every(Number.isInteger));
-  report.scenarios.push({ name: step, status: 'passed', operationKey: lostKey, mediaIds: ids, postCount: 1, simulation: 'committed HTTP response hidden from browser' });
+  report.scenarios.push({ name: step, status: 'passed', operationKey: lostKey, mediaIds: ids, postCount: 1, simulation: 'real successful browser multipart response discarded by injected fetch before the admin receives it' });
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.failedStep = step; report.errorType = error.name;
