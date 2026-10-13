@@ -9,6 +9,7 @@ export default function RecoveryPage() {
   const owner = user?.id ? `admin:${user.id}` : null;
   const [items, setItems] = useState<MediaIntent[]>([]);
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   useEffect(() => {
     if (!owner) return;
@@ -21,10 +22,10 @@ export default function RecoveryPage() {
         const rows = readIntents(owner);
         for (const item of rows.filter((row) => row.status === 'pending' || row.status === 'interrupted')) {
           const receipt = await fetchReceipt(item.key);
-          if (receipt) saveIntent({ ...item, status: receipt.status, message: receipt.error });
+          saveIntent({ ...item, status: receipt?.status || 'interrupted', message: receipt?.error });
         }
-        if (!stopped) setItems(readIntents(owner));
-      } catch { if (!stopped) setError('Le CMS est temporairement indisponible. Les envois restent conservés dans cet onglet.'); }
+        if (!stopped) { setItems(readIntents(owner)); setUnavailable(false); }
+      } catch { if (!stopped) setUnavailable(true); }
       finally { active = false; }
     };
     void refresh();
@@ -41,6 +42,7 @@ export default function RecoveryPage() {
     <h1>Reprise des médias</h1>
     <p>Retrouvez ici le résultat des envois de cet onglet après une interruption. Un envoi terminé ne doit pas être recommencé. Une nouvelle sélection dans la médiathèque crée un nouvel envoi.</p>
     {error && <p role="alert">{error}</p>}
+    {unavailable && <p role="status">Le CMS est temporairement indisponible. Les envois restent conservés dans cet onglet.</p>}
     {!items.length && <p>Aucun envoi à vérifier dans cet onglet.</p>}
     <ul>{items.map((item) => <li key={item.key} style={{ margin: '1.5rem 0' }}>
       <strong>{item.files.map((file) => file.name).join(', ') || 'Suppression de média'}</strong>
