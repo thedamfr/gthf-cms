@@ -16,6 +16,17 @@ export function mediaVersion(file: any) {
   const values = Object.fromEntries(['hash', 'name', 'alternativeText', 'caption', 'focalPoint', 'folderPath', 'mime', 'url', 'ext', 'width', 'height', 'size', 'formats', 'provider', 'provider_metadata'].map((key) => [key, file[key]]));
   return sha256(stableJSON({ ...values, updatedAt: new Date(file.updatedAt).toISOString() }));
 }
+export function mediaPermissionSubject(file: any) {
+  // Keep file attributes used by conditions, never raw populated admin records.
+  // The permission check reloads the creator and current roles when needed.
+  const fields = ['id', 'documentId', 'name', 'alternativeText', 'caption', 'width', 'height', 'formats',
+    'hash', 'ext', 'mime', 'size', 'sizeInBytes', 'url', 'previewUrl', 'provider', 'provider_metadata',
+    'folderPath', 'createdAt', 'updatedAt', 'publishedAt'];
+  return { ...Object.fromEntries(fields.filter((key) => file[key] !== undefined).map((key) => [key, serializable(file[key])])),
+    createdBy: file.createdBy?.id ?? file.createdBy ?? null,
+    updatedBy: file.updatedBy?.id ?? file.updatedBy ?? null,
+    folder: file.folder?.id ?? file.folder ?? null };
+}
 export async function requestFingerprint(kind: string, targetId: number | undefined, data: any, inputs: any[]) {
   const files = [];
   for (const file of inputs) {
@@ -86,7 +97,7 @@ export async function prepareMedia(strapi: any, original: any, storage: Recovery
       }
       file.provider = strapi.config.get('plugin::upload').provider;
       const values = Object.fromEntries(Object.entries(serializable(file)).filter(([key]) => allowed.has(key)));
-      manifest.files.push({ values, ...(oldFile ? { targetId: oldFile.id, previousHash: oldFile.hash, previousVersion: mediaVersion(oldFile), previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: serializable(oldFile) } : {}) });
+      manifest.files.push({ values, ...(oldFile ? { targetId: oldFile.id, previousHash: oldFile.hash, previousVersion: mediaVersion(oldFile), previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: mediaPermissionSubject(oldFile) } : {}) });
     }
     return { manifest, bodies, cleanup: () => fs.rm(directory, { recursive: true, force: true }) };
   } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }

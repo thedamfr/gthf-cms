@@ -2,7 +2,7 @@ import { sanitize } from '@strapi/utils';
 import { randomUUID } from 'node:crypto';
 import { MediaJournal } from './journal';
 import { createFaultGate, FaultPoint } from './fault-gate';
-import { existingObjects, mediaVersion, prepareMedia, requestFingerprint } from './prepare';
+import { existingObjects, mediaVersion, mediaPermissionSubject, prepareMedia, requestFingerprint } from './prepare';
 import { RecoveryStorage, sha256 } from './storage';
 import { Actor, FILE_UID, Operation, OperationKind, RecoveryError, RECONCILE_MS, publicReceipt } from './types';
 
@@ -104,7 +104,7 @@ export class MediaRecovery {
     let cleanup: (() => Promise<void>) | undefined;
     try {
       const prepared = kind === 'delete'
-        ? { manifest: { files: [{ values: {}, targetId: oldFile.id, previousHash: oldFile.hash, previousVersion: mediaVersion(oldFile), previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: oldFile }],
+        ? { manifest: { files: [{ values: {}, targetId: oldFile.id, previousHash: oldFile.hash, previousVersion: mediaVersion(oldFile), previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: mediaPermissionSubject(oldFile) }],
           objects: [], obsolete: existingObjects(oldFile, this.storage, this.strapi.config.get('plugin::upload').provider) }, bodies: new Map<string, string>(), cleanup: async () => {} }
         : await prepareMedia(this.strapi, original, this.storage, operation, data, files, oldFile);
       cleanup = prepared.cleanup;

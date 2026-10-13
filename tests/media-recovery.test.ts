@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { MediaRecovery, actorFor, operationKey } from '../src/infrastructure/recovery/engine';
-import { existingObjects, mediaVersion, prepareMedia, requestFingerprint, stableJSON } from '../src/infrastructure/recovery/prepare';
+import { existingObjects, mediaVersion, mediaPermissionSubject, prepareMedia, requestFingerprint, stableJSON } from '../src/infrastructure/recovery/prepare';
 import { sha256 } from '../src/infrastructure/recovery/storage';
 import { publicReceipt } from '../src/infrastructure/recovery/types';
 
@@ -47,12 +47,15 @@ test('replacement preparation leaves old objects intact and describes all new im
     const original = { formatFileInfo: async ({ filename, type, size }, info) => ({ name: filename, mime: type, size: size / 1000, ext: '.txt', hash: 'random', ...info }) };
     const strapi = { config: { get: () => ({ provider: 'aws-s3' }) }, getModel: () => ({ attributes: Object.fromEntries(['name', 'mime', 'size', 'ext', 'hash', 'url', 'provider', 'provider_metadata', 'formats', 'folder', 'folderPath'].map((key) => [key, {}])) }),
       plugin: () => ({ service: (name) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => {} } }) };
-    const old = { id: 42, hash: 'old-immutable', ext: '.txt', provider: 'aws-s3', updatedAt: '2026-10-13T00:00:00.000Z', folder: { id: 7 } };
+    const old = { id: 42, hash: 'old-immutable', ext: '.txt', provider: 'aws-s3', updatedAt: '2026-10-13T00:00:00.000Z', folder: { id: 7 }, createdBy: { id: 4, password: 'private-admin-hash', resetPasswordToken: 'private-reset' } };
     const { manifest, bodies, cleanup } = await prepareMedia(strapi, original, storage as any, { key, attempt } as any, { fileInfo: {} }, [{ filepath, originalFilename: 'example.txt', mimetype: 'text/plain', size: 8 }], old);
     assert.equal(writes, 0);
     assert.deepEqual(manifest.obsolete, [{ key: 'old-immutable.txt' }]);
     assert.equal(manifest.files[0].targetId, 42);
     assert.equal(manifest.files[0].values.folder, 7);
+    assert.equal(manifest.files[0].permissionSubject.createdBy, 4);
+    assert.equal(JSON.stringify(manifest).includes('private-admin-hash'), false);
+    assert.equal(JSON.stringify(manifest).includes('private-reset'), false);
     assert.notEqual(manifest.files[0].values.hash, old.hash);
     assert.equal(manifest.objects[0].sha256, sha256('new body'));
     const spool = bodies.get(manifest.objects[0].key)!;
@@ -131,4 +134,13 @@ test('shutdown waits for an HTTP media operation already in flight', async () =>
     finish!(); assert.deepEqual(await request, [{ id: 7 }]); await stopping;
     assert.equal(closed, true);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('delete permission snapshots retain relation IDs without populated admin secrets', () => {
+  const subject = mediaPermissionSubject({ id: 12, name: 'fixture', mime: 'text/plain',
+    createdBy: { id: 4, password: 'secret-hash', resetPasswordToken: 'secret-reset', registrationToken: 'secret-registration' },
+    updatedBy: { id: 5, password: 'secret-other' }, folder: { id: 8, createdBy: { password: 'secret-folder' } },
+    related: [{ privateField: 'secret-related' }] });
+  assert.deepEqual(subject, { id: 12, name: 'fixture', mime: 'text/plain', createdBy: 4, updatedBy: 5, folder: 8 });
+  assert.equal(JSON.stringify(subject).includes('secret-'), false);
 });
