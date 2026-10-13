@@ -1,13 +1,19 @@
+import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { DeleteObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { RecoveryError, StoredObject } from './types';
 
 export const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
+export async function fingerprintFile(filepath: string) {
+  const hash = createHash('sha256'); let bytes = 0;
+  for await (const chunk of createReadStream(filepath)) { hash.update(chunk); bytes += chunk.length; }
+  return { sha256: hash.digest('hex'), bytes };
+}
 const REQUEST_MS = 30_000;
 export interface RecoveryStorage {
   key(file: { hash: string; ext?: string; path?: string }): string;
   url(key: string): string;
-  put(object: StoredObject, bytes: Buffer): Promise<void>;
+  put(object: StoredObject, bytes: Buffer | string): Promise<void>;
   exists(object: StoredObject): Promise<boolean>;
   remove(object: StoredObject): Promise<void>;
   close(): void;
@@ -46,17 +52,19 @@ export function createRecoveryStorage(config: any): RecoveryStorage {
       if (clientOptions.endpoint) return `${String(clientOptions.endpoint).replace(/\/+$/, '')}/${bucket}/${key}`;
       return `https://${bucket}.s3.amazonaws.com/${key}`;
     },
-    async put(object, bytes) {
-      if (sha256(bytes) !== object.sha256 || bytes.length !== object.bytes) throw new Error('Media bytes changed after preparation');
+    async put(object, input) {
+      const digest = typeof input === 'string' ? await fingerprintFile(input) : { sha256: sha256(input), bytes: input.length };
+      if (digest.sha256 !== object.sha256 || digest.bytes !== object.bytes) throw new Error('Media bytes changed after preparation');
+      const body = typeof input === 'string' ? createReadStream(input) : input;
       try {
-        await send(new PutObjectCommand({ Bucket: bucket, Key: object.key, Body: bytes,
-          ContentLength: bytes.length, ContentType: object.mime, Metadata: { gthfsha256: object.sha256 },
+        await send(new PutObjectCommand({ Bucket: bucket, Key: object.key, Body: body,
+          ContentLength: object.bytes, ContentType: object.mime, Metadata: { gthfsha256: object.sha256 },
           IfNoneMatch: '*', ...(!('ACL' in params) ? { ACL: 'public-read' as const } : params.ACL ? { ACL: params.ACL } : {}),
         }));
       } catch (error: any) {
         if (error.$metadata?.httpStatusCode !== 412) throw error;
         // Only the exact same immutable object can satisfy a replay.
-      }
+      } finally { if (!Buffer.isBuffer(body)) body.destroy(); }
       if (!await exists(object)) throw new Error('Media upload was not durable');
     },
     exists,

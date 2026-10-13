@@ -57,3 +57,31 @@ test('a conditional PUT conflict is accepted only for the same immutable bytes',
     await assert.rejects(recovery.put(object, bytes), (error: any) => error.code === 'OBJECT_CONFLICT');
   } finally { recovery.close(); S3Client.prototype.send = original; }
 });
+test('a prepared spool is streamed to S3 and changed bytes are refused before PUT', async () => {
+  const { promises: fs } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const directory = await fs.mkdtemp(join(tmpdir(), 'gthf-stream-put-'));
+  const original = S3Client.prototype.send;
+  const bytes = Buffer.alloc(256 * 1024, 42);
+  const object = { key: 'immutable', sha256: sha256(bytes), bytes: bytes.length };
+  const filepath = join(directory, 'body'); let puts = 0;
+  await fs.writeFile(filepath, bytes);
+  S3Client.prototype.send = (async (command: any) => {
+    if (command instanceof PutObjectCommand) {
+      puts++; assert.equal(Buffer.isBuffer(command.input.Body), false);
+      let total = 0;
+      for await (const chunk of command.input.Body) { assert.ok(chunk.length < bytes.length); total += chunk.length; }
+      assert.equal(total, bytes.length); assert.equal(command.input.ContentLength, bytes.length);
+      return {};
+    }
+    return { Metadata: { gthfsha256: object.sha256 }, ContentLength: bytes.length };
+  }) as any;
+  const recovery = createRecoveryStorage(config());
+  try {
+    await recovery.put(object, filepath); assert.equal(puts, 1);
+    await fs.writeFile(filepath, 'changed');
+    await assert.rejects(recovery.put(object, filepath), /changed after preparation/);
+    assert.equal(puts, 1);
+  } finally { recovery.close(); S3Client.prototype.send = original; await fs.rm(directory, { recursive: true, force: true }); }
+});

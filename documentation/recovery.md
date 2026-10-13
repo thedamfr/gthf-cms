@@ -18,7 +18,10 @@ réutilise la clé précédente ; réutiliser cette clé avec un autre payload e
 conflit. La version d’origine du média remplacé/supprimé reste ancrée entre
 tentatives : un réessai ne peut pas écraser une modification concurrente. Le journal PostgreSQL doit précéder tout effet S3, et le reçu final doit
 être transactionnel avec le fichier Strapi. Les objets portent des clés immuables
-par tentative ; les anciens objets ne sont nettoyés qu’après validation SQL.
+par tentative. Les originaux et variantes sont hashés et déposés dans un répertoire
+temporaire privé, puis envoyés en flux après journalisation : les corps du lot ne
+sont pas conservés ensemble dans le heap. Ce spool est supprimé après traitement ;
+les anciens objets ne sont nettoyés qu’après validation SQL.
 
 Le résultat public d’une opération est `pending`, `committed`, `interrupted` ou
 `failed`. Une opération complète côté stockage peut être finalisée après redémarrage.

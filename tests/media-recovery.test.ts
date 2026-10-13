@@ -48,17 +48,21 @@ test('replacement preparation leaves old objects intact and describes all new im
     const strapi = { config: { get: () => ({ provider: 'aws-s3' }) }, getModel: () => ({ attributes: Object.fromEntries(['name', 'mime', 'size', 'ext', 'hash', 'url', 'provider', 'provider_metadata', 'formats', 'folder', 'folderPath'].map((key) => [key, {}])) }),
       plugin: () => ({ service: (name) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => {} } }) };
     const old = { id: 42, hash: 'old-immutable', ext: '.txt', provider: 'aws-s3', updatedAt: '2026-10-13T00:00:00.000Z', folder: { id: 7 } };
-    const { manifest, bodies } = await prepareMedia(strapi, original, storage as any, { key, attempt } as any, { fileInfo: {} }, [{ filepath, originalFilename: 'example.txt', mimetype: 'text/plain', size: 8 }], old);
+    const { manifest, bodies, cleanup } = await prepareMedia(strapi, original, storage as any, { key, attempt } as any, { fileInfo: {} }, [{ filepath, originalFilename: 'example.txt', mimetype: 'text/plain', size: 8 }], old);
     assert.equal(writes, 0);
     assert.deepEqual(manifest.obsolete, [{ key: 'old-immutable.txt' }]);
     assert.equal(manifest.files[0].targetId, 42);
     assert.equal(manifest.files[0].values.folder, 7);
     assert.notEqual(manifest.files[0].values.hash, old.hash);
     assert.equal(manifest.objects[0].sha256, sha256('new body'));
-    assert.equal(bodies.get(manifest.objects[0].key)?.toString(), 'new body');
+    const spool = bodies.get(manifest.objects[0].key)!;
+    assert.equal(await fs.readFile(spool, 'utf8'), 'new body');
+    assert.equal((await fs.stat(spool)).mode & 0o077, 0);
     assert.equal(JSON.stringify(manifest).includes(filepath), false);
     assert.equal(JSON.stringify(manifest).includes('tmpWorkingDirectory'), false);
     assert.equal(old.hash, 'old-immutable');
+    await cleanup();
+    assert.equal(await fs.stat(spool).catch(() => null), null);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 test('cleanup never assumes ownership of media stored by a different provider', () => {

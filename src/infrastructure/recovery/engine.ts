@@ -101,11 +101,13 @@ export class MediaRecovery {
       throw new RecoveryError(409, 'OPERATION_PENDING', 'This media operation is still being recovered');
     }
     const stopHeartbeat = this.heartbeat(operation);
+    let cleanup: (() => Promise<void>) | undefined;
     try {
       const prepared = kind === 'delete'
         ? { manifest: { files: [{ values: {}, targetId: oldFile.id, previousHash: oldFile.hash, previousVersion: mediaVersion(oldFile), previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: oldFile }],
-          objects: [], obsolete: existingObjects(oldFile, this.storage, this.strapi.config.get('plugin::upload').provider) }, bodies: new Map<string, Buffer>() }
+          objects: [], obsolete: existingObjects(oldFile, this.storage, this.strapi.config.get('plugin::upload').provider) }, bodies: new Map<string, string>(), cleanup: async () => {} }
         : await prepareMedia(this.strapi, original, this.storage, operation, data, files, oldFile);
+      cleanup = prepared.cleanup;
       await this.journal.prepare(operation, prepared.manifest);
       await this.checkpoint('after-journal', operation);
       for (const [index, object] of operation.manifest.objects.entries()) {
@@ -140,7 +142,9 @@ export class MediaRecovery {
         .whereIn('state', ['preparing', 'prepared']).update({ lease_until: this.journal.db.fn.now() }); } catch {}
       if (error instanceof RecoveryError) throw error;
       throw new RecoveryError(503, 'OPERATION_PENDING', 'Media recovery is pending; keep the operation key and retry');
-    } finally { await stopHeartbeat(); }
+    } finally {
+      try { await cleanup?.(); } finally { await stopHeartbeat(); }
+    }
   }
   upload(original: any, request: any, opts?: any) {
     return this.track(() => this.execute(original, 'upload', request.data, Array.isArray(request.files) ? request.files : [request.files], opts?.user));
