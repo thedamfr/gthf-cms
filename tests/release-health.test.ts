@@ -47,3 +47,31 @@ test('release revision prefers GTHF and keeps the previous image variable readab
     }
   }
 });
+
+test('readiness bounds pool acquisition and shares its pending check across probes', async () => {
+  let reads = 0;
+  let finish: () => void;
+  const query = new Promise<void>((resolve) => { finish = resolve; });
+  const handler = release({ timeoutMs: 15 }, { strapi: { db: { connection: { raw: () => { reads++; return query; } } } } } as any);
+  const probe = async () => {
+    const ctx = { path: '/api/release', method: 'GET', set: () => {}, status: 0 };
+    await handler(ctx as any, async () => assert.fail('handled route'));
+    return ctx.status;
+  };
+  assert.deepEqual(await Promise.all([probe(), probe()]), [503, 503]);
+  assert.equal(reads, 1);
+  finish!();
+  await query;
+  assert.equal(await probe(), 200);
+});
+
+test('readiness asks Knex to cancel a query that exceeds its execution deadline', async () => {
+  let options: unknown;
+  const handler = release({ timeoutMs: 15 }, { strapi: { db: { connection: { raw: () => ({ timeout: (ms, config) => {
+    options = { ms, ...config }; return Promise.reject(new Error('cancelled private query'));
+  } }) } } } } as any);
+  const ctx = { path: '/api/release', method: 'GET', set: () => {}, status: 0 };
+  await handler(ctx as any, async () => assert.fail('handled route'));
+  assert.equal(ctx.status, 503);
+  assert.deepEqual(options, { ms: 15, cancel: true });
+});
