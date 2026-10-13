@@ -89,7 +89,10 @@ This starts:
 Create `.env` file with:
 
 ```env
-# Database
+# Database (the supported CMS engine is PostgreSQL)
+DATABASE_CLIENT=postgres
+DATABASE_HOST=127.0.0.1
+DATABASE_PORT=5432
 DATABASE_NAME=gthdf
 DATABASE_USERNAME=gthdf
 DATABASE_PASSWORD=gthdf

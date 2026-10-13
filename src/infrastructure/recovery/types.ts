@@ -7,11 +7,11 @@ export type OperationKind = 'upload' | 'replace' | 'delete';
 export type OperationState = 'preparing' | 'prepared' | 'committed' | 'interrupted' | 'failed';
 export type Actor = { id: string; adminUserId?: number };
 export type StoredObject = { key: string; sha256?: string; bytes?: number; mime?: string };
-export type FilePlan = { values: Record<string, any>; targetId?: number; previousHash?: string; previousUpdatedAt?: string; permissionSubject?: Record<string, any> };
+export type FilePlan = { values: Record<string, any>; targetId?: number; previousHash?: string; previousVersion?: string; previousUpdatedAt?: string; permissionSubject?: Record<string, any> };
 export type Manifest = { files: FilePlan[]; objects: StoredObject[]; obsolete: StoredObject[] };
 export type Operation = {
   key: string; actor: string; admin_user_id: number | null; kind: OperationKind;
-  request_hash: string; target_id: number | null; attempt: string; state: OperationState;
+  request_hash: string; target_version?: string | null; target_id: number | null; attempt: string; state: OperationState;
   manifest: Manifest | null; receipt: any; failure: string | null;
   lease_owner: string | null; lease_until: Date | null; created_at: Date; updated_at: Date;
 };

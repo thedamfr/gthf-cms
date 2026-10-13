@@ -2,7 +2,7 @@ import { sanitize } from '@strapi/utils';
 import { randomUUID } from 'node:crypto';
 import { MediaJournal } from './journal';
 import { createFaultGate, FaultPoint } from './fault-gate';
-import { existingObjects, prepareMedia, requestFingerprint } from './prepare';
+import { existingObjects, mediaVersion, prepareMedia, requestFingerprint } from './prepare';
 import { RecoveryStorage, sha256 } from './storage';
 import { Actor, FILE_UID, Operation, OperationKind, RecoveryError, RECONCILE_MS, publicReceipt } from './types';
 
@@ -41,7 +41,12 @@ export class MediaRecovery {
   private context(user?: any, targetId?: number) {
     const ctx = this.strapi.requestContext.get();
     const actor = actorFor(ctx, user);
-    let key = operationKey(ctx?.get('Idempotency-Key'));
+    const header = ctx?.get('Idempotency-Key');
+    if (actor.id.startsWith('admin:') && ctx && !header
+      && /^\/upload(?:\/files(?:\/\d+(?:\/replace)?)?)?$/.test(ctx.path)) {
+      throw new RecoveryError(409, 'ADMIN_RELOAD_REQUIRED', 'Actualisez l’administration avant de modifier les médias : cet onglet utilise une ancienne version.');
+    }
+    let key = operationKey(header);
     // Bulk deletion uses one durable child intent per target. Ordinary uploads and
     // single-file endpoints preserve exactly the UUID sent by the client.
     if (ctx?.path?.endsWith('/actions/bulk-delete') && targetId !== undefined) {
@@ -67,18 +72,21 @@ export class MediaRecovery {
     return () => clearInterval(timer);
   }
   private async execute(original: any, kind: OperationKind, data: any, files: any[], user?: any, oldFile?: any) {
-    const { actor, key } = this.context(user, oldFile?.id);
+    const { ctx, actor, key } = this.context(user, oldFile?.id);
     const requestHash = await requestFingerprint(kind, oldFile?.id, data, files);
-    const { operation, acquired } = await this.journal.begin({ key, actor, kind, requestHash, targetId: oldFile?.id });
+    const { operation, acquired } = await this.journal.begin({ key, actor, kind, requestHash, targetId: oldFile?.id, targetVersion: oldFile ? mediaVersion(oldFile) : undefined });
     if (!acquired) {
-      if (operation.state === 'committed') return operation.receipt;
+      if (operation.state === 'committed') {
+        if (ctx) ctx.state.gthfMediaCommittedReplay = true;
+        return operation.receipt;
+      }
       if (operation.state === 'failed') throw new RecoveryError(409, operation.failure || 'OPERATION_FAILED', 'This media operation could not be completed');
       throw new RecoveryError(409, 'OPERATION_PENDING', 'This media operation is still being recovered');
     }
     const stopHeartbeat = this.heartbeat(operation);
     try {
       const prepared = kind === 'delete'
-        ? { manifest: { files: [{ values: {}, targetId: oldFile.id, previousHash: oldFile.hash, previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: oldFile }],
+        ? { manifest: { files: [{ values: {}, targetId: oldFile.id, previousHash: oldFile.hash, previousVersion: mediaVersion(oldFile), previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: oldFile }],
           objects: [], obsolete: existingObjects(oldFile, this.storage, this.strapi.config.get('plugin::upload').provider) }, bodies: new Map<string, Buffer>() }
         : await prepareMedia(this.strapi, original, this.storage, operation, data, files, oldFile);
       await this.journal.prepare(operation, prepared.manifest);
@@ -100,9 +108,10 @@ export class MediaRecovery {
       } catch {}
       return result;
     } catch (error: any) {
-      if (!operation.manifest && ['ValidationError', 'ApplicationError'].includes(error.name)) {
-        try { await this.journal.interrupt(operation, true, 'INVALID_MEDIA'); } catch {}
-        throw new RecoveryError(400, 'INVALID_MEDIA', 'The media could not be validated');
+      if (!operation.manifest && ['ValidationError', 'ApplicationError', 'PayloadTooLargeError'].includes(error.name)) {
+        try { await this.journal.interrupt(operation, true, error.name === 'PayloadTooLargeError' ? 'MEDIA_TOO_LARGE' : 'INVALID_MEDIA'); } catch {}
+        throw new RecoveryError(error.name === 'PayloadTooLargeError' ? 413 : 400,
+          error.name === 'PayloadTooLargeError' ? 'MEDIA_TOO_LARGE' : 'INVALID_MEDIA', 'The media could not be validated');
       }
       if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'OBJECT_CONFLICT', 'INVALID_MEDIA'].includes(error.code)) {
         try { await this.journal.interrupt(operation, true, error.code); } catch {}

@@ -9,6 +9,10 @@ export function stableJSON(value: any): string {
   if (value && typeof value === 'object') return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${stableJSON(value[key])}`).join(',')}}`;
   return JSON.stringify(value);
 }
+export function mediaVersion(file: any) {
+  const values = Object.fromEntries(['hash', 'name', 'alternativeText', 'caption', 'focalPoint', 'folderPath', 'mime', 'url', 'ext', 'width', 'height', 'size', 'formats', 'provider', 'provider_metadata'].map((key) => [key, file[key]]));
+  return sha256(stableJSON({ ...values, updatedAt: new Date(file.updatedAt).toISOString() }));
+}
 export async function requestFingerprint(kind: string, targetId: number | undefined, data: any, inputs: any[]) {
   const files = [];
   for (const file of inputs) {
@@ -38,7 +42,9 @@ export async function prepareMedia(strapi: any, original: any, storage: Recovery
     const infos = Array.isArray(data.fileInfo) ? data.fileInfo : [data.fileInfo];
     for (const [index, input] of files.entries()) {
       const declared = input.mimetype && input.mimetype !== 'application/octet-stream' ? input.mimetype : undefined;
-      let file = await original.formatFileInfo({ filename: input.originalFilename ?? 'unamed', type: input.detectedMimeType || declared || 'application/octet-stream', size: input.size }, infos[index] || {}, data);
+      const info = { ...(infos[index] || {}) };
+      if (oldFile && info.folder === undefined) info.folder = oldFile.folder?.id ?? oldFile.folder ?? null;
+      let file = await original.formatFileInfo({ filename: input.originalFilename ?? 'unamed', type: input.detectedMimeType || declared || 'application/octet-stream', size: input.size }, info, data);
       file.hash = `gthf_${operation.attempt.replace(/-/g, '')}_${index}`;
       file.path = undefined; // The journal owns these keys; never trust a caller-provided object path.
       file.tmpWorkingDirectory = directory;
@@ -74,7 +80,7 @@ export async function prepareMedia(strapi: any, original: any, storage: Recovery
       }
       file.provider = strapi.config.get('plugin::upload').provider;
       const values = Object.fromEntries(Object.entries(serializable(file)).filter(([key]) => allowed.has(key)));
-      manifest.files.push({ values, ...(oldFile ? { targetId: oldFile.id, previousHash: oldFile.hash, previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: serializable(oldFile) } : {}) });
+      manifest.files.push({ values, ...(oldFile ? { targetId: oldFile.id, previousHash: oldFile.hash, previousVersion: mediaVersion(oldFile), previousUpdatedAt: new Date(oldFile.updatedAt).toISOString(), permissionSubject: serializable(oldFile) } : {}) });
     }
     return { manifest, bodies };
   } finally { await fs.rm(directory, { recursive: true, force: true }); }

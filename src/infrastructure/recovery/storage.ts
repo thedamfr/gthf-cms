@@ -20,7 +20,8 @@ export function createRecoveryStorage(config: any): RecoveryStorage {
   const client = new S3Client({ ...clientOptions, maxAttempts: 1, requestChecksumCalculation: 'WHEN_REQUIRED' });
   const bucket = params.Bucket;
   const root = options.rootPath ? `${String(options.rootPath).replace(/\/+$/, '')}/` : '';
-  const safe = (value: string) => value.replace(/[^a-zA-Z0-9_.-]/g, '');
+  // Match the pinned provider exactly, including historical keys with spaces.
+  const safe = (value: string) => value.replace(/\.\./g, '').replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
   const send = (command: any) => client.send(command, { abortSignal: AbortSignal.timeout(REQUEST_MS) }) as Promise<any>;
   const exists = async (object: StoredObject) => {
     try {
@@ -36,8 +37,9 @@ export function createRecoveryStorage(config: any): RecoveryStorage {
   };
   return {
     key(file) {
-      const prefix = file.path ? `${file.path.split('/').map(safe).filter(Boolean).join('/')}/` : '';
-      return `${root}${prefix}${safe(file.hash)}${safe(file.ext || '')}`;
+      const folder = safe(file.path || '');
+      const prefix = folder ? `${folder}/` : '';
+      return `${root}${prefix}${safe(file.hash)}${(file.ext || '').replace(/[^a-zA-Z0-9.]/g, '')}`;
     },
     url(key) {
       if (options.baseUrl) return `${String(options.baseUrl).replace(/\/+$/, '')}/${key}`;
@@ -59,6 +61,15 @@ export function createRecoveryStorage(config: any): RecoveryStorage {
     },
     exists,
     async remove(object) {
+      if (object.sha256) {
+        try { if (!await exists(object)) return; }
+        catch (error) {
+          // A conflicting object was never owned by this attempt. Its operation
+          // is failed; preserve the foreign bytes while cleaning our other keys.
+          if (error instanceof RecoveryError && error.code === 'OBJECT_CONFLICT') return;
+          throw error;
+        }
+      }
       await send(new DeleteObjectCommand({ Bucket: bucket, Key: object.key }));
       if (await exists({ key: object.key })) throw new Error('Media cleanup is not yet confirmed');
     },

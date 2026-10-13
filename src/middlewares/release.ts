@@ -9,7 +9,9 @@ export default (config: { timeoutMs?: number } = {}, { strapi }: { strapi: Core.
     if (!pending) {
       const query = strapi.db.connection.raw('select 1');
       // Knex cancels a running PostgreSQL query. The outer deadline also covers acquisition.
-      const execution = typeof query.timeout === 'function' ? query.timeout(timeoutMs, { cancel: true }) : query;
+      const dialect = strapi.db.connection.client?.config?.client;
+      const execution = typeof query.timeout === 'function'
+        ? query.timeout(timeoutMs, { cancel: ['postgres', 'pg', 'postgresql'].includes(dialect) }) : query;
       const current = Promise.resolve(execution).then(() => undefined);
       pending = current;
       current.finally(() => { if (pending === current) pending = undefined; }).catch(() => {});

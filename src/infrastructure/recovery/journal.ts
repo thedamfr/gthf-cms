@@ -1,3 +1,4 @@
+import { mediaVersion } from './prepare';
 import { randomUUID } from 'node:crypto';
 import { Actor, FILE_UID, LEASE_MS, Manifest, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, Operation, OperationKind, RecoveryError, StoredObject } from './types';
 
@@ -21,6 +22,9 @@ export class MediaJournal {
           table.index(['state', 'lease_until']); table.index(['actor', 'created_at']);
         });
       }
+      if (!await trx.schema.hasColumn(MEDIA_OPERATION_TABLE, 'target_version')) {
+        await trx.schema.alterTable(MEDIA_OPERATION_TABLE, (table) => table.string('target_version', 64).nullable());
+      }
       if (!await trx.schema.hasTable(MEDIA_CLEANUP_TABLE)) {
         await trx.schema.createTable(MEDIA_CLEANUP_TABLE, (table) => {
           table.uuid('id').primary(); table.uuid('operation_key').notNullable();
@@ -42,11 +46,11 @@ export class MediaJournal {
     if (!row || row.actor !== actor) throw new RecoveryError(404, 'OPERATION_NOT_FOUND', 'Media operation not found');
     return row;
   }
-  async begin(input: { key: string; actor: Actor; kind: OperationKind; requestHash: string; targetId?: number }): Promise<{ operation: Operation; acquired: boolean }> {
+  async begin(input: { key: string; actor: Actor; kind: OperationKind; requestHash: string; targetId?: number; targetVersion?: string }): Promise<{ operation: Operation; acquired: boolean }> {
     return this.db.transaction(async (trx) => {
       const inserted = await trx(MEDIA_OPERATION_TABLE).insert({ key: input.key, actor: input.actor.id,
         admin_user_id: input.actor.adminUserId ?? null, kind: input.kind, request_hash: input.requestHash,
-        target_id: input.targetId ?? null, attempt: randomUUID(), state: 'preparing',
+        target_id: input.targetId ?? null, target_version: input.targetVersion ?? null, attempt: randomUUID(), state: 'preparing',
         lease_owner: randomUUID(), lease_until: this.lease(trx) }).onConflict('key').ignore().returning('key');
       const row: Operation = await trx(MEDIA_OPERATION_TABLE).where({ key: input.key }).forUpdate().first();
       if (row.actor !== input.actor.id) throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key is unavailable');
@@ -56,6 +60,11 @@ export class MediaJournal {
       if (row.state === 'committed' || row.state === 'failed') return { operation: row, acquired: false };
       if (inserted.length) return { operation: row, acquired: true };
       if (row.state !== 'interrupted') return { operation: row, acquired: false };
+      if (row.kind !== 'upload' && (!row.target_version || row.target_version !== input.targetVersion)) {
+        const [failed] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({ state: 'failed',
+          failure: 'MEDIA_CHANGED', lease_owner: null, lease_until: null, updated_at: trx.fn.now() }).returning('*');
+        return { operation: failed, acquired: false };
+      }
       const [next] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({
         attempt: randomUUID(), state: 'preparing', manifest: null, failure: null,
         lease_owner: randomUUID(), lease_until: this.lease(trx), updated_at: trx.fn.now(),
@@ -110,6 +119,7 @@ export class MediaJournal {
           await trx(fileTable).where({ id: plan.targetId }).forUpdate().first();
           const existing = await this.strapi.db.query(FILE_UID).findOne({ where: { id: plan.targetId } });
           if (!existing || existing.hash !== plan.previousHash
+            || (plan.previousVersion && mediaVersion(existing) !== plan.previousVersion)
             || (plan.previousUpdatedAt && new Date(existing.updatedAt).toISOString() !== plan.previousUpdatedAt)) {
             throw new RecoveryError(409, 'MEDIA_CHANGED', 'The media changed while this operation was pending');
           }
@@ -155,7 +165,7 @@ export class MediaJournal {
   }
   async finishCleanup(id: string, leaseOwner: string) {
     const count = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner }).where('lease_until', '>', this.db.fn.now())
-      .update({ state: 'done', lease_owner: null, lease_until: null, updated_at: this.db.fn.now() });
+      .delete();
     if (!count) throw new RecoveryError(409, 'CLEANUP_LEASE_LOST', 'Cleanup will be resumed');
   }
 }

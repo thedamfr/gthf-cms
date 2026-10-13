@@ -22,12 +22,18 @@ export function adaptAdminUpload(source: string, name: string) {
   let code = source;
   const once = (before: string, after: string) => { code = replaceOnce(code, before, after); };
   if (name === 'hooks/useUpload.mjs') {
-    once('const abortController = new AbortController();', 'const abortController = React.useRef(new AbortController()).current;');
+    once('const abortController = new AbortController();', 'const abortController = React.useRef(null);');
+    once('const signal = abortController.signal;', '');
+    once('const cancel = ()=>abortController.abort();', 'const cancel = ()=>abortController.current?.abort();');
+    once('return uploadAssets(assets, folderId, signal, setProgress, store.getState().admin_app?.token);', 'abortController.current = new AbortController(); return uploadAssets(assets, folderId, abortController.current.signal, setProgress, store.getState().admin_app?.token);');
     once('return uploadFileViaXHR(`${window.strapi.backendURL}${endpoint}`, token, formData, signal, (loaded, total)=>{',
       'return runMediaIntent({ url: `${window.strapi.backendURL}${endpoint}`, formData, signal, shape: "array" }, (key) => uploadFileViaXHR(`${window.strapi.backendURL}${endpoint}`, token, formData, signal, (loaded, total)=>{');
     once('    });\n};\nconst useUpload', '    }, key));\n};\nconst useUpload');
   } else if (name === 'hooks/useEditAsset.mjs') {
-    once('const abortController = new AbortController();', 'const abortController = React.useRef(new AbortController()).current;');
+    once('const abortController = new AbortController();', 'const abortController = React.useRef(null);');
+    once('const signal = abortController.signal;', '');
+    once('const cancel = ()=>abortController.abort();', 'const cancel = ()=>abortController.current?.abort();');
+    once('({ asset, file })=>editAssetRequest(asset, file, signal, setProgress, post)', '({ asset, file })=>{ abortController.current = new AbortController(); return editAssetRequest(asset, file, abortController.current.signal, setProgress, post); }');
     once('return post(endpoint, formData, {\n        signal\n    }).then((res)=>res.data);',
       'return file ? runMediaIntent({ url: `${window.strapi.backendURL}${endpoint}`, formData, signal, shape: "single" }, (key) => post(endpoint, formData, { signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]), headers: { "Idempotency-Key": key } }).then((res)=>res.data)) : post(endpoint, formData, { signal }).then((res)=>res.data);');
   } else if (name === 'hooks/useRemoveAsset.mjs') {

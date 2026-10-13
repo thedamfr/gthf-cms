@@ -20,11 +20,15 @@ export default function RecoveryPage() {
       active = true;
       try {
         const rows = readIntents(owner);
+        let failed = false;
+        if (!stopped) setItems(rows);
         for (const item of rows.filter((row) => row.status === 'pending' || row.status === 'interrupted')) {
-          const receipt = await fetchReceipt(item.key);
-          saveIntent({ ...item, status: receipt?.status || 'interrupted', message: receipt?.error });
+          try {
+            const receipt = await fetchReceipt(item.key);
+            saveIntent({ ...item, status: receipt?.status || 'interrupted', message: receipt?.error });
+          } catch { failed = true; }
         }
-        if (!stopped) { setItems(readIntents(owner)); setUnavailable(false); }
+        if (!stopped) { setItems(readIntents(owner)); setUnavailable(failed); }
       } catch { if (!stopped) setUnavailable(true); }
       finally { active = false; }
     };

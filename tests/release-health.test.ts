@@ -67,11 +67,20 @@ test('readiness bounds pool acquisition and shares its pending check across prob
 
 test('readiness asks Knex to cancel a query that exceeds its execution deadline', async () => {
   let options: unknown;
-  const handler = release({ timeoutMs: 15 }, { strapi: { db: { connection: { raw: () => ({ timeout: (ms, config) => {
+  const handler = release({ timeoutMs: 15 }, { strapi: { db: { connection: { client: { config: { client: 'postgres' } }, raw: () => ({ timeout: (ms, config) => {
     options = { ms, ...config }; return Promise.reject(new Error('cancelled private query'));
   } }) } } } } as any);
   const ctx = { path: '/api/release', method: 'GET', set: () => {}, status: 0 };
   await handler(ctx as any, async () => assert.fail('handled route'));
   assert.equal(ctx.status, 503);
   assert.deepEqual(options, { ms: 15, cancel: true });
+});
+
+test('readiness keeps a bounded check without unsupported SQLite cancellation', async () => {
+  const handler = release({ timeoutMs: 15 }, { strapi: { db: { connection: { client: { config: { client: 'sqlite3' } }, raw: () => ({ timeout: (_ms, options) => {
+    assert.equal(options.cancel, false); return Promise.resolve();
+  } }) } } } } as any);
+  const ctx = { path: '/api/release', method: 'GET', set: () => {}, status: 0 };
+  await handler(ctx as any, async () => assert.fail('handled route'));
+  assert.equal(ctx.status, 200);
 });

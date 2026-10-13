@@ -23,6 +23,17 @@ async function permissions(ctx: any, operation: Operation) {
 export default (plugin: any) => {
   const version = require('@strapi/upload/package.json').version;
   if (version !== EXPECTED_STRAPI) throw new Error(`Media recovery requires reviewed Strapi upload ${EXPECTED_STRAPI}`);
+  // A committed replay must not re-run telemetry or paid metadata generation.
+  for (const [service, action, replayValue] of [['metrics', 'trackUsage', undefined], ['aiMetadata', 'isEnabled', false]] as const) {
+    const factory = plugin.services[service];
+    plugin.services[service] = (context: any) => {
+      const original = factory(context);
+      return { ...original, [action]: function (...args: any[]) {
+        if (context.strapi.requestContext.get()?.state?.gthfMediaCommittedReplay) return Promise.resolve(replayValue);
+        return original[action].apply(original, args);
+      } };
+    };
+  }
   const createOriginal = plugin.services.upload;
   plugin.services.upload = (context: any) => {
     const original = createOriginal(context);

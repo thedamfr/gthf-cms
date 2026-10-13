@@ -57,3 +57,28 @@ test('actual transformed XHR exposes a server payload conflict to the retry deci
   await assert.rejects(transport('https://cms.example/upload', 'token', new FormData(), new AbortController().signal, () => {}, 'key'),
     (error: any) => error.status === 409 && error.code === 'IDEMPOTENCY_CONFLICT');
 });
+
+for (const name of ['hooks/useUpload.mjs', 'hooks/useEditAsset.mjs']) {
+  test(`a new mutation after cancel gets a live signal: ${name}`, async () => {
+    const { runInNewContext } = await import('node:vm');
+    const signals: AbortSignal[] = [];
+    const compiled = await transform(adaptAdminUpload(fs.readFileSync(path.join(root, name), 'utf8'), name), { loader: 'js', format: 'cjs' });
+    const module = { exports: {} as any };
+    const hooks = {
+      useState: () => [0, () => {}], useRef: (current: any) => ({ current }),
+      useMutation: (callback: any) => ({ mutateAsync: callback }), useQueryClient: () => ({}),
+      useDispatch: () => () => {}, useStore: () => ({ getState: () => ({}) }),
+      useIntl: () => ({ formatMessage: () => '' }), useNotification: () => ({}),
+      useFetchClient: () => ({ post: async (_url: string, _body: any, { signal }: any) => { signals.push(signal); return { data: {} }; } }),
+      runMediaIntent: async ({ signal }: any) => { signals.push(signal); return {}; },
+    };
+    runInNewContext(compiled.code, { module, exports: module.exports, AbortController, AbortSignal, FormData,
+      window: { strapi: { backendURL: 'https://cms.example' } }, require: () => hooks });
+    const hook = name.includes('useEditAsset') ? module.exports.useEditAsset() : module.exports.useUpload();
+    const invoke = () => hook.editAsset ? hook.editAsset({ id: 1 }, null) : hook.upload([], null);
+    await invoke(); assert.equal(signals[0].aborted, false);
+    hook.cancel(); assert.equal(signals[0].aborted, true);
+    await invoke(); assert.equal(signals[1].aborted, false);
+    assert.notEqual(signals[0], signals[1]);
+  });
+}

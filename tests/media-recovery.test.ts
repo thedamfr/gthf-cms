@@ -3,8 +3,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { actorFor, operationKey } from '../src/infrastructure/recovery/engine';
-import { existingObjects, prepareMedia, requestFingerprint, stableJSON } from '../src/infrastructure/recovery/prepare';
+import { MediaRecovery, actorFor, operationKey } from '../src/infrastructure/recovery/engine';
+import { existingObjects, mediaVersion, prepareMedia, requestFingerprint, stableJSON } from '../src/infrastructure/recovery/prepare';
 import { sha256 } from '../src/infrastructure/recovery/storage';
 import { publicReceipt } from '../src/infrastructure/recovery/types';
 
@@ -45,13 +45,14 @@ test('replacement preparation leaves old objects intact and describes all new im
     const storage = { key: (file) => file.hash + file.ext, url: (objectKey) => 'https://media.example/' + objectKey,
       put: async () => { writes++; }, remove: async () => { writes++; } };
     const original = { formatFileInfo: async ({ filename, type, size }, info) => ({ name: filename, mime: type, size: size / 1000, ext: '.txt', hash: 'random', ...info }) };
-    const strapi = { config: { get: () => ({ provider: 'aws-s3' }) }, getModel: () => ({ attributes: Object.fromEntries(['name', 'mime', 'size', 'ext', 'hash', 'url', 'provider', 'provider_metadata', 'formats'].map((key) => [key, {}])) }),
+    const strapi = { config: { get: () => ({ provider: 'aws-s3' }) }, getModel: () => ({ attributes: Object.fromEntries(['name', 'mime', 'size', 'ext', 'hash', 'url', 'provider', 'provider_metadata', 'formats', 'folder', 'folderPath'].map((key) => [key, {}])) }),
       plugin: () => ({ service: (name) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => {} } }) };
-    const old = { id: 42, hash: 'old-immutable', ext: '.txt', provider: 'aws-s3', updatedAt: '2026-10-13T00:00:00.000Z' };
+    const old = { id: 42, hash: 'old-immutable', ext: '.txt', provider: 'aws-s3', updatedAt: '2026-10-13T00:00:00.000Z', folder: { id: 7 } };
     const { manifest, bodies } = await prepareMedia(strapi, original, storage as any, { key, attempt } as any, { fileInfo: {} }, [{ filepath, originalFilename: 'example.txt', mimetype: 'text/plain', size: 8 }], old);
     assert.equal(writes, 0);
     assert.deepEqual(manifest.obsolete, [{ key: 'old-immutable.txt' }]);
     assert.equal(manifest.files[0].targetId, 42);
+    assert.equal(manifest.files[0].values.folder, 7);
     assert.notEqual(manifest.files[0].values.hash, old.hash);
     assert.equal(manifest.objects[0].sha256, sha256('new body'));
     assert.equal(bodies.get(manifest.objects[0].key)?.toString(), 'new body');
@@ -66,4 +67,34 @@ test('cleanup never assumes ownership of media stored by a different provider', 
 });
 test('canonical JSON preserves arrays ordering while ignoring absent optional fields', () => {
   assert.equal(stableJSON({ b: undefined, a: ['b', 'a'] }), '{"a":["b","a"]}');
+});
+
+test('an old admin without an intent is rejected before any database or storage effect', async () => {
+  const ctx = { path: '/upload', state: { userAbility: {}, user: { id: 4 } }, get: () => '', set() {} };
+  const engine = new MediaRecovery({ requestContext: { get: () => ctx }, db: { connection: {} } }, {} as any);
+  await assert.rejects(engine.upload({}, { data: {}, files: [] }), (error: any) => error.code === 'ADMIN_RELOAD_REQUIRED');
+});
+test('oversized media becomes a terminal 413 receipt without storage effects', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-too-large-'));
+  try {
+    const filepath = path.join(directory, 'file'); await fs.writeFile(filepath, 'test');
+    const ctx = { path: '/upload', state: { userAbility: {}, user: { id: 4 } }, get: () => key, set() {} };
+    const strapi = { requestContext: { get: () => ctx }, db: { connection: {} }, config: { get: () => ({ provider: 'aws-s3' }) },
+      getModel: () => ({ attributes: {} }), plugin: () => ({ service: (name) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => { throw Object.assign(new Error('too large'), { name: 'PayloadTooLargeError' }); } } }) };
+    const engine = new MediaRecovery(strapi, {} as any);
+    const operation = { key, attempt, state: 'preparing' };
+    engine.journal.begin = async () => ({ acquired: true, operation }) as any;
+    let failure: any;
+    engine.journal.interrupt = async (...args) => { failure = args; };
+    const original = { formatFileInfo: async () => ({ hash: 'test', ext: '.pdf' }) };
+    await assert.rejects(engine.upload(original, { data: {}, files: [{ filepath, size: 4 }] }), (error: any) => error.status === 413 && error.code === 'MEDIA_TOO_LARGE');
+    assert.deepEqual(failure, [operation, true, 'MEDIA_TOO_LARGE']);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('target versions detect same-timestamp metadata and folder changes without relation-population noise', () => {
+  const file = { hash: 'old', name: 'original', folderPath: '/1', updatedAt: '2026-10-13T00:00:00Z' };
+  assert.notEqual(mediaVersion(file), mediaVersion({ ...file, name: 'edited' }));
+  assert.notEqual(mediaVersion(file), mediaVersion({ ...file, folderPath: '/2' }));
+  assert.equal(mediaVersion(file), mediaVersion({ ...file, createdBy: { id: 4 }, folder: { id: 1 } }));
 });
