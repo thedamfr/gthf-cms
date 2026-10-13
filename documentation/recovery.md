@@ -158,6 +158,33 @@ Playwright et restent distinctes des vrais SIGKILL/coupures QEMU de la campagne.
 Aucune coupure VM n’est effectuée par cette commande. Les médias synthétiques
 créés restent conservés pour les vérifications SQL/S3 et le nettoyage final du banc.
 
+### Golden Journeys navigateur URL
+
+La suite comporte cinq parcours médias usuels. L’option suivante ajoute trois
+Golden Journeys URL : sélections volontaires/URL dupliquées aux clés distinctes,
+interruption avant envoi puis reprise de la même entrée après rechargement, et
+flux perdu après commit puis reçu retrouvé sans second POST.
+
+```sh
+npm run test:e2e:media-admin -- --campaign UUID --manifest /CHEMIN/PRIVE/manifest.json --url-fixture /CHEMIN/PRIVE/url-fixture.json
+```
+
+Le fichier privé, dans le même répertoire de campagne que le manifeste, contient
+`{"campaignId":"UUID","url":"http://203.0.113.42:9000/BUCKET/CLE"}`. Il est produit
+seulement après validation du routage réel par `withUrlFixture`, dans le harnais
+frontend `scripts/recovery/url-fixture.mjs`. Le Service temporaire appartient à la
+VM synthétique et à la campagne ; son retrait est conditionné par son UID.
+L’URL vise un objet synthétique du bucket de cette campagne, sans query string.
+Ce banc conserve le contrôle SSRF de Strapi et n’autorise pas l’egress public ; il
+qualifie une source HTTP du banc, pas un fournisseur public distant.
+
+Le navigateur active la médiathèque bêta uniquement dans son propre contexte
+Playwright afin d’exercer le flux serveur SSE. Cette option ne modifie aucun
+réglage de l’application. La médiathèque historique télécharge les URL dans le
+navigateur puis utilise l’upload multipart déjà journalisé ; ce chemin distinct
+reste protégé par ses reçus multipart. Sans `--url-fixture`, le rapport indique
+explicitement que les trois parcours URL n’ont pas été exécutés.
+
 ### Suppression groupée : parent durable et périmètre figé
 
 `POST /upload/actions/bulk-delete` reçoit `{fileIds: number[], folderIds: number[]}`
