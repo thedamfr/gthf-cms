@@ -10,7 +10,7 @@ const MEDIA = 'http://127.0.0.1:33190';
 const ROOT = '/home/ubuntu/.local/state/infra-sincere/qualification-vm';
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{40}$/;
-const { values } = parseArgs({ options: { manifest: { type: 'string' }, campaign: { type: 'string' } } });
+const { values } = parseArgs({ options: { manifest: { type: 'string' }, campaign: { type: 'string' }, 'url-fixture': { type: 'string' } } });
 process.umask(0o077);
 function privateFile(file) {
   assert.ok(path.isAbsolute(file));
@@ -37,6 +37,15 @@ const campaignRoot = path.join(ROOT, manifest.runId);
 assert.equal(path.dirname(values.manifest), campaignRoot);
 assert.equal(realpathSync(campaignRoot), campaignRoot);
 assert.equal(lstatSync(campaignRoot).mode & 0o077, 0);
+const urlFixture = values['url-fixture'] ? privateFile(values['url-fixture']) : null;
+if (urlFixture) {
+  assert.equal(path.dirname(values['url-fixture']), campaignRoot);
+  assert.equal(urlFixture.campaignId, values.campaign);
+  const url = new URL(urlFixture.url);
+  assert.equal(url.origin, 'http://203.0.113.42:9000');
+  assert.ok(url.pathname.startsWith('/' + manifest.bucket + '/'));
+  assert.equal(url.search, ''); assert.equal(url.hash, '');
+}
 const credentials = privateFile(path.join(campaignRoot, 'credentials.json'));
 assert.ok(typeof credentials.RECOVERY_ADMIN_PASSWORD === 'string' && credentials.RECOVERY_ADMIN_PASSWORD.length >= 20);
 const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -59,7 +68,7 @@ async function until(read, predicate, timeout = 60_000) {
 }
 let mode = 'normal'; let intercepted = false; let blockReceipts = false;
 let capturedCommit; let capturedBulkCommit; let bulkAllowed;
-const requests = []; const bulkRequests = []; const receiptRequests = [];
+const requests = []; const bulkRequests = []; const urlRequests = []; const receiptRequests = [];
 try {
   const health = await fetch(CMS + '/api/release', { signal: AbortSignal.timeout(5000) });
   assert.equal(health.status, 200);
@@ -106,6 +115,24 @@ try {
     if (url.pathname.startsWith('/upload/recovery/operations/')) {
       receiptRequests.push(url.pathname.split('/').at(-1));
       if (blockReceipts) return route.abort('connectionreset');
+    }
+    if (request.method() === 'POST' && url.pathname === '/upload/actions/upload-from-urls') {
+      assert.ok(urlFixture, 'URL imports need an explicitly verified isolated source');
+      const payload = request.postDataJSON();
+      assert.ok(payload.urls.length > 0 && payload.urls.length <= 2);
+      assert.ok(payload.urls.every((value) => value === urlFixture.url));
+      assert.equal(payload.operationKeys.length, payload.urls.length);
+      assert.equal(new Set(payload.operationKeys).size, payload.urls.length);
+      for (const key of payload.operationKeys) assert.match(key, UUID);
+      const saved = await page.evaluate(() => Object.keys(sessionStorage).filter((name) => name.startsWith('gthf-media-intents-v1:'))
+        .flatMap((name) => JSON.parse(sessionStorage.getItem(name))));
+      for (const key of payload.operationKeys) {
+        const intent = saved.find((item) => item.key === key);
+        assert.equal(intent?.kind, 'url-upload'); assert.equal(intent?.sourceUrl, urlFixture.url);
+        assert.equal(intent?.folderId, payload.folderId ?? null);
+      }
+      urlRequests.push({ payload, mode });
+      if (!intercepted && mode === 'url-before-send') { intercepted = true; return route.abort('connectionreset'); }
     }
     if (request.method() === 'POST' && url.pathname === '/upload/actions/bulk-delete') {
       const key = request.headers()['idempotency-key']; assert.match(key || '', UUID);
@@ -222,7 +249,7 @@ try {
     await page.getByRole('button', { name: /add new folder/i }).click();
     const folderName = 'recovery-browser-folder-' + randomUUID();
     await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill(folderName);
-    const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/upload/folders');
+    const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname.replace(/\/$/, '') === '/upload/folders');
     await page.getByRole('dialog').getByRole('button', { name: 'Create', exact: true }).click();
     const folderResponse = await created; assert.ok(folderResponse.ok()); const folderBody = await folderResponse.json();
     const folder = folderBody.data; assert.ok(Number.isSafeInteger(folder.id) && folder.id > 0); assert.equal(folder.name, folderName);
@@ -240,7 +267,7 @@ try {
   };
   const assertSelectionGone = async ({ files, folder }) => {
     const listing = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/upload/files');
-    const folders = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/upload/folders');
+    const folders = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname.replace(/\/$/, '') === '/upload/folders');
     await page.goto(CMS + '/admin/plugins/upload');
     for (const [pending, deleted] of [[listing, files.map((file) => file.id)], [folders, [folder.id]]]) {
       const response = await pending; assert.ok(response.ok());
@@ -286,6 +313,77 @@ try {
   await assertSelectionGone(selectedLost);
   report.scenarios.push({ name: step, status: 'passed', operationKey: bulkLostKey, selected: bulkAllowed, postCount: 1, childCount: savedBulk.progress.total,
     simulation: 'real successful JSON bulk response discarded with Playwright after server commit, then receipt read after page reload' });
+  if (urlFixture) {
+    // Enable Strapi's shipped beta library only inside this test browser. The
+    // production feature configuration and the server's SSRF rules are unchanged.
+    await context.addInitScript(({ origin }) => {
+      let strapi;
+      Object.defineProperty(window, 'strapi', { configurable: true, get: () => strapi, set(value) {
+        strapi = value;
+        const original = value.future.isEnabled.bind(value.future);
+        value.future.isEnabled = (name) => name === 'betaMediaLibrary' || original(name);
+      } });
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const address = args[0] instanceof Request ? args[0].url : String(args[0]);
+        const url = new URL(address, location.href);
+        const method = args[1]?.method || (args[0] instanceof Request ? args[0].method : 'GET');
+        if (window.__gthfLoseUrl && method.toUpperCase() === 'POST' && url.origin === origin && url.pathname === '/upload/actions/upload-from-urls') {
+          window.__gthfLoseUrl = false;
+          const response = await nativeFetch(...args);
+          const text = await response.text();
+          window.__gthfHiddenUrl = { status: response.status, text };
+          throw new TypeError('Simulated lost SSE acknowledgment after the real server response');
+        }
+        return nativeFetch(...args);
+      };
+    }, { origin: CMS });
+    const selectUrls = async (count = 1) => {
+      await page.goto(CMS + '/admin/plugins/upload');
+      await page.evaluate((hide) => { window.__gthfLoseUrl = hide; }, mode === 'url-after-commit');
+      await page.getByRole('button', { name: 'New', exact: true }).click();
+      await page.getByRole('menuitem', { name: /import from url/i }).click();
+      await page.getByRole('dialog').locator('textarea[name=urls]').fill(Array(count).fill(urlFixture.url).join('\n'));
+      await page.getByRole('dialog').getByRole('button', { name: 'Upload', exact: true }).click();
+    };
+    const nextUrlKeys = async (offset) => (await until(() => urlRequests, (rows) => rows.length > offset))[offset].payload.operationKeys;
+    step = 'Golden Journey intentional URL selections and duplicates have distinct durable identities';
+    mode = 'normal'; let offset = urlRequests.length;
+    await selectUrls(2); const pair = await nextUrlKeys(offset);
+    for (const key of pair) await committed(key);
+    offset = urlRequests.length; await selectUrls(); const [fresh] = await nextUrlKeys(offset); await committed(fresh);
+    assert.equal(new Set([...pair, fresh]).size, 3);
+    report.scenarios.push({ name: step, status: 'passed', operationKeys: [...pair, fresh], sameSource: true });
+
+    step = 'Golden Journey URL transport loss resumes its saved identity after reload';
+    mode = 'url-before-send'; intercepted = false; offset = urlRequests.length;
+    await selectUrls(); const [retry] = await nextUrlKeys(offset);
+    await page.goto(CMS + '/admin/plugins/gthf-media-recovery');
+    await page.getByRole('heading', { name: 'Reprise des médias' }).waitFor();
+    await until(intents, (rows) => rows.some((row) => row.key === retry && row.status === 'interrupted'));
+    mode = 'normal';
+    await page.getByRole('button', { name: 'Reprendre cet import', exact: true }).click();
+    await committed(retry);
+    assert.equal(urlRequests.slice(offset).length, 2);
+    assert.ok(urlRequests.slice(offset).every((row) => row.payload.operationKeys.length === 1 && row.payload.operationKeys[0] === retry));
+    report.scenarios.push({ name: step, status: 'passed', operationKey: retry, attempts: 2,
+      simulation: 'first URL POST aborted before sending, reload and explicit resume with the same identity' });
+
+    step = 'Golden Journey lost URL stream reads the durable receipt after reload without reposting';
+    mode = 'url-after-commit'; blockReceipts = true; offset = urlRequests.length;
+    await selectUrls(); const [lost] = await nextUrlKeys(offset);
+    const hidden = await until(() => page.evaluate(() => window.__gthfHiddenUrl), Boolean);
+    assert.equal(hidden.status, 200); assert.ok(hidden.text.includes('event: stream:complete'));
+    const completed = hidden.text.split('\n\n').find((event) => event.startsWith('event: file:complete\n'));
+    assert.ok(completed, 'The hidden response must contain a real media commit');
+    const file = JSON.parse(completed.split('\ndata: ')[1]); assert.equal(file.operationKey, lost); assert.ok(Number.isSafeInteger(file.file.id));
+    blockReceipts = false; mode = 'normal';
+    await page.goto(CMS + '/admin/plugins/gthf-media-recovery'); await committed(lost);
+    assert.equal(urlRequests.slice(offset).length, 1); assert.ok(receiptRequests.includes(lost));
+    await page.screenshot({ path: path.join(directory, 'url-receipts.png'), fullPage: true });
+    report.scenarios.push({ name: step, status: 'passed', operationKey: lost, mediaId: file.file.id, postCount: 1,
+      simulation: 'real completed SSE response discarded before the admin sees it; receipt consulted after reload' });
+  } else report.limits.push('URL import browser scenarios were not selected; they require --url-fixture from the isolated bench.');
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.failedStep = step; report.errorType = error.name;
