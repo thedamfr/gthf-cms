@@ -1,6 +1,7 @@
 import { MediaRecovery, actorFor, operationKey } from '../../infrastructure/recovery/engine';
 import { createRecoveryStorage } from '../../infrastructure/recovery/storage';
 import { createFaultGate } from '../../infrastructure/recovery/fault-gate';
+import { adminMediaPermissions } from '../../infrastructure/recovery/authorization';
 import { FILE_UID, Operation, RecoveryError } from '../../infrastructure/recovery/types';
 
 // Private extension contracts are deliberately pinned and checked by tests/build.
@@ -17,18 +18,7 @@ export async function stopRecoveryForJournalQualification() {
   await recovery.stop();
 }
 async function permissions(ctx: any, operation: Operation) {
-  const pm = application.service('admin::permission').createPermissionsManager({ ability: ctx.state.userAbility,
-    action: operation.kind === 'upload' ? 'plugin::upload.assets.create' : 'plugin::upload.assets.update', model: FILE_UID });
-  if (!pm.isAllowed) throw new RecoveryError(403, 'FORBIDDEN', 'Media operation access denied');
-  for (const plan of operation.manifest?.files || []) {
-    const subject = plan.permissionSubject || { ...plan.values, createdBy: operation.admin_user_id };
-    const creator = subject.createdBy?.id ?? subject.createdBy;
-    const author = creator ? await application.service('admin::user').findOne(creator, ['roles']) : null;
-    if (pm.ability.cannot(pm.action, pm.toSubject({ ...subject, createdBy: author }))) {
-      throw new RecoveryError(403, 'FORBIDDEN', 'Media operation access denied');
-    }
-  }
-  return pm;
+  return adminMediaPermissions(application, ctx.state.userAbility, operation);
 }
 export default (plugin: any) => {
   const version = require('@strapi/upload/package.json').version;

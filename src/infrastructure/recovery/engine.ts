@@ -1,6 +1,7 @@
 import { sanitize } from '@strapi/utils';
 import { randomUUID } from 'node:crypto';
 import { MediaJournal } from './journal';
+import { authorizeMediaOperation } from './authorization';
 import { createFaultGate, FaultPoint } from './fault-gate';
 import { existingObjects, mediaVersion, mediaPermissionSubject, prepareMedia, requestFingerprint } from './prepare';
 import { RecoveryStorage, sha256 } from './storage';
@@ -13,8 +14,9 @@ export function operationKey(value?: string) {
   return value.toLowerCase();
 }
 export function actorFor(ctx: any, user?: any): Actor {
+  if (ctx?.state?.auth?.strategy?.name === 'admin-token' && ctx.state.auth.credentials?.id && ctx.state.user?.id) return { id: `admin-token:${ctx.state.auth.credentials.id}`, adminUserId: ctx.state.user.id };
   if (ctx?.state?.userAbility && ctx.state.user?.id) return { id: `admin:${ctx.state.user.id}`, adminUserId: ctx.state.user.id };
-  if (ctx?.state?.auth?.strategy?.name === 'api-token' && ctx.state.auth.credentials?.id) return { id: `api-token:${ctx.state.auth.credentials.id}` };
+  if (['api-token', 'content-api-token'].includes(ctx?.state?.auth?.strategy?.name) && ctx.state.auth.credentials?.id) return { id: `api-token:${ctx.state.auth.credentials.id}` };
   if (ctx?.state?.user?.id) return { id: `user:${ctx.state.user.id}` };
   if (!ctx && user?.id) return { id: `admin:${user.id}`, adminUserId: user.id };
   if (!ctx) return { id: 'internal' };
@@ -30,7 +32,7 @@ export class MediaRecovery {
   private operations = new Set<Promise<any>>();
   private stopped = false;
   constructor(private readonly strapi: any, private readonly storage: RecoveryStorage) {
-    this.journal = new MediaJournal(strapi);
+    this.journal = new MediaJournal(strapi, (operation) => authorizeMediaOperation(strapi, operation));
     this.gate = createFaultGate();
   }
   async start() {
@@ -58,7 +60,7 @@ export class MediaRecovery {
     const ctx = this.strapi.requestContext.get();
     const actor = actorFor(ctx, user);
     const header = ctx?.get('Idempotency-Key');
-    if (actor.id.startsWith('admin:') && ctx && !header
+    if (actor.adminUserId && ctx && !header
       && /^\/upload(?:\/files(?:\/\d+(?:\/replace)?)?)?$/.test(ctx.path)) {
       throw new RecoveryError(409, 'ADMIN_RELOAD_REQUIRED', 'Actualisez l’administration avant de modifier les médias : cet onglet utilise une ancienne version.');
     }
@@ -132,7 +134,7 @@ export class MediaRecovery {
         throw new RecoveryError(error.name === 'PayloadTooLargeError' ? 413 : 400,
           error.name === 'PayloadTooLargeError' ? 'MEDIA_TOO_LARGE' : 'INVALID_MEDIA', 'The media could not be validated');
       }
-      if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'OBJECT_CONFLICT', 'INVALID_MEDIA'].includes(error.code)) {
+      if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'OBJECT_CONFLICT', 'INVALID_MEDIA', 'AUTHORIZATION_REVOKED'].includes(error.code)) {
         try { await this.journal.interrupt(operation, true, error.code); } catch {}
         throw error;
       }
@@ -188,7 +190,7 @@ export class MediaRecovery {
             await this.journal.interrupt(operation);
           }
         } catch (error: any) {
-          if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'OBJECT_CONFLICT'].includes(error.code)) {
+          if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'OBJECT_CONFLICT', 'AUTHORIZATION_REVOKED'].includes(error.code)) {
             try { await this.journal.interrupt(operation, true, error.code); } catch {}
           }
           this.strapi.log.warn('[media-recovery] Operation remains pending; dependency or lease unavailable');

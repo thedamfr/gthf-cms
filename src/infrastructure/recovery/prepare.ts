@@ -16,16 +16,20 @@ export function mediaVersion(file: any) {
   const values = Object.fromEntries(['hash', 'name', 'alternativeText', 'caption', 'focalPoint', 'folderPath', 'mime', 'url', 'ext', 'width', 'height', 'size', 'formats', 'provider', 'provider_metadata'].map((key) => [key, file[key]]));
   return sha256(stableJSON({ ...values, updatedAt: new Date(file.updatedAt).toISOString() }));
 }
+function relationId(value: any) {
+  const id = value && typeof value === 'object' ? value.id : value;
+  return typeof id === 'number' || typeof id === 'string' ? id : null;
+}
 export function mediaPermissionSubject(file: any) {
   // Keep file attributes used by conditions, never raw populated admin records.
   // The permission check reloads the creator and current roles when needed.
-  const fields = ['id', 'documentId', 'name', 'alternativeText', 'caption', 'width', 'height', 'formats',
+  const fields = ['id', 'documentId', 'name', 'alternativeText', 'caption', 'focalPoint', 'width', 'height', 'formats',
     'hash', 'ext', 'mime', 'size', 'sizeInBytes', 'url', 'previewUrl', 'provider', 'provider_metadata',
     'folderPath', 'createdAt', 'updatedAt', 'publishedAt'];
   return { ...Object.fromEntries(fields.filter((key) => file[key] !== undefined).map((key) => [key, serializable(file[key])])),
-    createdBy: file.createdBy?.id ?? file.createdBy ?? null,
-    updatedBy: file.updatedBy?.id ?? file.updatedBy ?? null,
-    folder: file.folder?.id ?? file.folder ?? null };
+    createdBy: relationId(file.createdBy),
+    updatedBy: relationId(file.updatedBy),
+    folder: relationId(file.folder) };
 }
 export async function requestFingerprint(kind: string, targetId: number | undefined, data: any, inputs: any[]) {
   const files = [];

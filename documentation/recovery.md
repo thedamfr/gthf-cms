@@ -2,13 +2,12 @@
 
 ## Summary
 
-L’issue #29 ajoute un journal média privé, une reprise bornée après interruption et
-une identité conservée lors du réessai d’un envoi. La qualification utilise une VM
-isolée et des données synthétiques. Le backend et l’adaptateur admin sont implémentés ; la qualification réelle reste en cours :
-aucune panne n’a été injectée en production, aucune livraison n’est encore validée.
-Le contrôle `/api/release` borne déjà l’attente de la base et demande l’annulation
-SQL ; ses tests unitaires ne constituent pas une preuve de reprise réelle. Les
-envois depuis URL de la médiathèque bêta inactive restent hors garantie de réessai client.
+L’issue #29 ajoute un journal média durable et un réessai conservant la même
+intention. Le backend et l’adaptateur admin sont implémentés ; la qualification
+réelle PostgreSQL, S3 et navigateur reste en cours dans une VM synthétique.
+Aucune panne ni livraison n’est validée en production. Les droits sont revérifiés
+avant commit et consultation. L’import URL de la médiathèque bêta inactive reste
+hors garantie de réessai client.
 
 ## Synthèse
 
@@ -27,7 +26,10 @@ Le résultat public d’une opération est `pending`, `committed`, `interrupted`
 `failed`. Une opération complète côté stockage peut être finalisée après redémarrage.
 Un transfert incomplet dont les octets temporaires ont disparu devient explicitement
 interrompu : il n’est jamais annoncé réussi. Le client peut reprendre la même
-intention. Un reçu ne peut être consulté que par son propriétaire autorisé.
+intention. Avant commit, la révocation certaine des droits rend l’opération `failed`
+avec `AUTHORIZATION_REVOKED` ; une panne de vérification la laisse en attente.
+Les reçus déjà validés restent stables et ne sont consultables que par leur propriétaire
+actuellement autorisé. Le journal ne conserve aucun token ni relation admin privée.
 
 Le réconciliateur est prévu toutes les 15 secondes, avec bail de 90 secondes et
 contrôle de propriété avant validation. L’arrêt gracieux attend les mutations,
@@ -80,6 +82,18 @@ réconciliateur normal. Exécuter ce Job avant les pods CMS permanents du banc.
 Les tables privées `gthf_media_operations` et `gthf_media_cleanup` sont additives.
 Les reçus sont accessibles sous `/upload/recovery/operations/:key`, avec session admin,
 propriété de l’intention et vérification des permissions conditionnelles actuelles.
+Avant tout commit encore en attente, y compris autonome, les droits du principal sont
+relus : admin actif et conditions, token non révoqué/non expiré avec son périmètre,
+utilisateur API actif avec son rôle. Un refus certain devient `failed` avec
+`AUTHORIZATION_REVOKED` et nettoie les nouveaux objets ; une panne de lecture laisse
+l’opération en attente. Un reçu déjà `committed` reste inchangé. Les déconnexions de
+session ne révoquent pas à elles seules une intention déjà autorisée ; les identités
+et droits actuels sont relus sans conserver de jeton. Les jobs internes sans principal
+délégué restent des opérations de confiance du processus. Les sujets persistés ne
+conservent que les identifiants des relations admin, jamais leurs mots de passe.
+Strapi désactive le parseur JSONB PostgreSQL : le journal décode donc explicitement
+ses trois colonnes JSON privées, sans modifier le parseur global.
+
 Les objets étrangers détectés par checksum sont préservés et l’opération échoue
 explicitement ; le nettoyage ne détruit jamais ces collisions. Les lignes de
 nettoyage terminées sont retirées, tandis que les reçus durables sont conservés.

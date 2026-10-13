@@ -11,7 +11,7 @@ function operationRow(row: any): Operation | undefined {
 
 /** Private additive tables: never registered as a content type or exposed by REST. */
 export class MediaJournal {
-  constructor(private readonly strapi: any) {}
+  constructor(private readonly strapi: any, private readonly authorize: (operation: Operation) => Promise<void> = async () => {}) {}
   get db() { return this.strapi.db.connection; }
   async initialize() {
     await this.db.transaction(async (trx) => {
@@ -119,6 +119,8 @@ export class MediaJournal {
       await trx(MEDIA_OPERATION_TABLE).where({ key: operation.key }).forUpdate().first();
       const row = await this.assertLease(operation, trx);
       if (!row.manifest) throw new Error('Cannot commit an unprepared media operation');
+      await this.authorize(row);
+      await this.assertLease(operation, trx);
       const results = [];
       const fileTable = this.strapi.db.metadata.get(FILE_UID).tableName;
       for (const plan of row.manifest.files) {

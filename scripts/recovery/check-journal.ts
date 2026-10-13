@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createStrapi } from '@strapi/strapi';
 import { MediaJournal } from '../../src/infrastructure/recovery/journal';
-import { FILE_UID, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE } from '../../src/infrastructure/recovery/types';
+import { FILE_UID, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, RecoveryError } from '../../src/infrastructure/recovery/types';
 import { mediaVersion } from '../../src/infrastructure/recovery/prepare';
 import { sha256 } from '../../src/infrastructure/recovery/storage';
 
@@ -90,6 +90,13 @@ async function main() {
     assert.equal(await application.db.query(FILE_UID).count({ where: { hash } }), 0);
     assert.equal((await journal.get(input.key)).state, 'prepared');
     checks.push('a real file INSERT rolls back with the receipt when the transaction fails');
+
+    checkpoint('authorization refusal before the real SQL commit');
+    const refused = new MediaJournal(application, async () => { throw new RecoveryError(403, 'AUTHORIZATION_REVOKED', 'qualification revoked permission'); });
+    await assert.rejects(refused.commit(recovered), (error: any) => error.code === 'AUTHORIZATION_REVOKED');
+    assert.equal(await application.db.query(FILE_UID).count({ where: { hash } }), 0);
+    assert.equal((await journal.get(input.key)).state, 'prepared');
+    checks.push('authorization refusal rolls back without a file or committed receipt');
 
     checkpoint('durable commit and receipt replay');
     const result = await journal.commit(recovered);

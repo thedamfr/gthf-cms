@@ -143,4 +143,5 @@ test('delete permission snapshots retain relation IDs without populated admin se
     related: [{ privateField: 'secret-related' }] });
   assert.deepEqual(subject, { id: 12, name: 'fixture', mime: 'text/plain', createdBy: 4, updatedBy: 5, folder: 8 });
   assert.equal(JSON.stringify(subject).includes('secret-'), false);
+  assert.equal(mediaPermissionSubject({ createdBy: { password: 'secret-without-id' } }).createdBy, null);
 });
