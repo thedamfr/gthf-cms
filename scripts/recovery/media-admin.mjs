@@ -70,19 +70,30 @@ try {
   // body through route.fetch. Reject only after its real successful response,
   // before the admin client can read the acknowledgment.
   await context.addInitScript(({ origin }) => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, options) => {
-      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
-      const method = (options?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
-      const hide = window.__gthfLoseNextUpload && url.origin === origin
-        && method === 'POST' && /^\/upload(?:\/files)?$/.test(url.pathname);
-      if (hide) window.__gthfLoseNextUpload = false;
-      const response = await nativeFetch(input, options);
-      if (hide) {
-        window.__gthfHiddenUpload = { status: response.status, body: await response.clone().json() };
-        if (response.ok) throw new TypeError('Synthetic response loss after successful media commit');
+    const NativeXHR = window.XMLHttpRequest;
+    window.XMLHttpRequest = class extends NativeXHR {
+      constructor() {
+        super();
+        this.addEventListener('load', (event) => {
+          if (!this.__gthfHideAcknowledgment) return;
+          window.__gthfHiddenUpload = { status: this.status, body: JSON.parse(this.responseText) };
+          if (this.status >= 200 && this.status < 300) {
+            event.stopImmediatePropagation();
+            this.dispatchEvent(new ProgressEvent('error'));
+          }
+        }, true);
       }
-      return response;
+      open(method, address, ...options) {
+        const url = new URL(String(address), location.href);
+        this.__gthfUpload = url.origin === origin && method.toUpperCase() === 'POST'
+          && /^\/upload(?:\/files)?$/.test(url.pathname);
+        return super.open(method, address, ...options);
+      }
+      send(body) {
+        this.__gthfHideAcknowledgment = this.__gthfUpload && window.__gthfLoseNextUpload;
+        if (this.__gthfHideAcknowledgment) window.__gthfLoseNextUpload = false;
+        return super.send(body);
+      }
     };
   }, { origin: CMS });
   const handleRoute = async (route) => {
@@ -172,7 +183,7 @@ try {
   await page.screenshot({ path: path.join(directory, 'receipts.png'), fullPage: true });
   const ids = (Array.isArray(capturedCommit) ? capturedCommit : [capturedCommit]).map((file) => file.id);
   assert.ok(ids.every(Number.isInteger));
-  report.scenarios.push({ name: step, status: 'passed', operationKey: lostKey, mediaIds: ids, postCount: 1, simulation: 'real successful browser multipart response discarded by injected fetch before the admin receives it' });
+  report.scenarios.push({ name: step, status: 'passed', operationKey: lostKey, mediaIds: ids, postCount: 1, simulation: 'real successful browser multipart response discarded by an injected XHR load listener before the admin receives it' });
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.failedStep = step; report.errorType = error.name;
