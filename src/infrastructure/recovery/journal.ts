@@ -2,6 +2,13 @@ import { mediaVersion } from './prepare';
 import { randomUUID } from 'node:crypto';
 import { Actor, FILE_UID, LEASE_MS, Manifest, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, Operation, OperationKind, RecoveryError, StoredObject } from './types';
 
+// Strapi disables pg's JSONB parser globally. These private Knex tables bypass
+// Strapi's model-field decoder, so decode only their JSON columns at read time.
+function json(value: any) { return typeof value === 'string' ? JSON.parse(value) : value; }
+function operationRow(row: any): Operation | undefined {
+  return row ? { ...row, manifest: json(row.manifest), receipt: json(row.receipt) } : undefined;
+}
+
 /** Private additive tables: never registered as a content type or exposed by REST. */
 export class MediaJournal {
   constructor(private readonly strapi: any) {}
@@ -40,7 +47,7 @@ export class MediaJournal {
     });
   }
   lease(trx = this.db) { return trx.raw("clock_timestamp() + (? * interval '1 millisecond')", [LEASE_MS]); }
-  async get(key: string): Promise<Operation | undefined> { return this.db(MEDIA_OPERATION_TABLE).where({ key }).first(); }
+  async get(key: string): Promise<Operation | undefined> { return operationRow(await this.db(MEDIA_OPERATION_TABLE).where({ key }).first()); }
   async getOwned(key: string, actor: string) {
     const row = await this.get(key);
     if (!row || row.actor !== actor) throw new RecoveryError(404, 'OPERATION_NOT_FOUND', 'Media operation not found');
@@ -52,7 +59,7 @@ export class MediaJournal {
         admin_user_id: input.actor.adminUserId ?? null, kind: input.kind, request_hash: input.requestHash,
         target_id: input.targetId ?? null, target_version: input.targetVersion ?? null, attempt: randomUUID(), state: 'preparing',
         lease_owner: randomUUID(), lease_until: this.lease(trx) }).onConflict('key').ignore().returning('key');
-      const row: Operation = await trx(MEDIA_OPERATION_TABLE).where({ key: input.key }).forUpdate().first();
+      const row = operationRow(await trx(MEDIA_OPERATION_TABLE).where({ key: input.key }).forUpdate().first())!;
       if (row.actor !== input.actor.id) throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key is unavailable');
       if (row.kind !== input.kind || row.request_hash !== input.requestHash || row.target_id !== (input.targetId ?? null)) {
         throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key belongs to a different request');
@@ -63,20 +70,20 @@ export class MediaJournal {
       if (row.kind !== 'upload' && (!row.target_version || row.target_version !== input.targetVersion)) {
         const [failed] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({ state: 'failed',
           failure: 'MEDIA_CHANGED', lease_owner: null, lease_until: null, updated_at: trx.fn.now() }).returning('*');
-        return { operation: failed, acquired: false };
+        return { operation: operationRow(failed)!, acquired: false };
       }
       const [next] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({
         attempt: randomUUID(), state: 'preparing', manifest: null, failure: null,
         lease_owner: randomUUID(), lease_until: this.lease(trx), updated_at: trx.fn.now(),
       }).returning('*');
-      return { operation: next, acquired: true };
+      return { operation: operationRow(next)!, acquired: true };
     });
   }
   async assertLease(operation: Pick<Operation, 'key' | 'attempt' | 'lease_owner'>, trx = this.db) {
     const row = await trx(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: operation.lease_owner })
       .where('lease_until', '>', trx.raw('clock_timestamp()')).first();
     if (!row || !['preparing', 'prepared'].includes(row.state)) throw new RecoveryError(409, 'OPERATION_LEASE_LOST', 'This media operation is being recovered');
-    return row as Operation;
+    return operationRow(row)!;
   }
   async heartbeat(operation: Pick<Operation, 'key' | 'attempt' | 'lease_owner'>) {
     const count = await this.db(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: operation.lease_owner })
@@ -149,7 +156,7 @@ export class MediaJournal {
       if (!row) return undefined;
       const [claimed] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({ lease_owner: randomUUID(),
         lease_until: this.lease(trx), updated_at: trx.fn.now() }).returning('*');
-      return claimed;
+      return operationRow(claimed);
     });
   }
   async claimCleanup() {
@@ -160,7 +167,7 @@ export class MediaJournal {
       if (!row) return undefined;
       const [claimed] = await trx(MEDIA_CLEANUP_TABLE).where({ id: row.id }).update({ lease_owner: randomUUID(),
         lease_until: this.lease(trx), updated_at: trx.fn.now() }).returning('*');
-      return claimed;
+      return { ...claimed, objects: json(claimed.objects) };
     });
   }
   async finishCleanup(id: string, leaseOwner: string) {

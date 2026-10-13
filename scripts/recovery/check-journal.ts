@@ -75,6 +75,9 @@ async function main() {
     const manifest = { files: [{ values: { name: 'isolated journal fixture', hash, ext: '.txt', mime: 'text/plain', size: 0.001,
       url: `https://example.invalid/${hash}.txt`, provider: 'aws-s3' } }], objects: [], obsolete: [] };
     await journal.prepare(recovered, manifest);
+    const stored: any = await db(MEDIA_OPERATION_TABLE).where({ key: input.key }).select(db.raw('jsonb_typeof(manifest) AS manifest_type')).first();
+    assert.equal(stored.manifest_type, 'object', 'manifest must be a JSONB object, not a double-encoded string');
+    assert.deepEqual((await journal.get(input.key)).manifest, manifest, 'private journal reads must decode Strapi JSONB text');
     const originalQuery = application.db.query.bind(application.db);
     (application.db as any).query = (uid: any) => {
       const query = originalQuery(uid);
@@ -93,6 +96,8 @@ async function main() {
     const replay = await journal.begin(input);
     assert.equal(replay.acquired, false);
     assert.equal(replay.operation.state, 'committed');
+    const storedReceipt: any = await db(MEDIA_OPERATION_TABLE).where({ key: input.key }).select(db.raw('jsonb_typeof(receipt) AS receipt_type')).first();
+    assert.equal(storedReceipt.receipt_type, 'array');
     assert.deepEqual(replay.operation.receipt.map((file: any) => file.id), result.map((file: any) => file.id));
     assert.equal(await application.db.query(FILE_UID).count({ where: { hash } }), 1);
     checks.push('commit followed by a lost response reuses one durable receipt and one file');
