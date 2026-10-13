@@ -143,7 +143,7 @@ function parseMigrationArguments(argv, cwd = process.cwd()) {
     help: false,
     mappingPath: resolve(
       cwd,
-      '../gthdf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv'
+      '../gthf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv'
     ),
     resolutionsPath: undefined,
     remote: false,

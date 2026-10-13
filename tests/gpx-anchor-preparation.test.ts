@@ -368,8 +368,8 @@ test('parseAnchorPreparationArguments keeps dry-run safe and requires confirmati
   assert.equal(options.remote, false);
   assert.equal(options.cleverApp, 'gthdf-cms');
   assert.equal(options.allowSelfSignedTls, false);
-  assert.match(options.citiesPath, /gthdf-frontend.*villes\.csv$/);
-  assert.match(options.chaptersPath, /gthdf-frontend.*chapitres\.csv$/);
+  assert.match(options.citiesPath, /gthf-frontend.*villes\.csv$/);
+  assert.match(options.chaptersPath, /gthf-frontend.*chapitres\.csv$/);
   assert.match(options.reportPath, /gpx-anchor-report\.json$/);
   assert.throws(
     () => parseAnchorPreparationArguments(['--apply'], '/tmp/gthdf-anchor-test'),

@@ -3,17 +3,25 @@ import test from 'node:test';
 import { requireStagingTarget, requireStagingReadToken, stagingMediaUrl, editableColumns, isCompletedMediaCopy, initialExampleTokens } from '../scripts/prepare-delivery-staging.mjs';
 
 const staging = {
-  GTHDF_NAMESPACE: 'gthdf-qualification', DATABASE_HOST: 'gthdf-postgres', DATABASE_CLIENT: 'postgres',
+  GTHF_NAMESPACE: 'gthf-qualification', DATABASE_HOST: 'gthf-postgres', DATABASE_CLIENT: 'postgres',
   AWS_BUCKET: 'gthf-staging-media-bis', AWS_ENDPOINT: 'https://s3.gra.io.cloud.ovh.net',
 };
 
 test('data preparation refuses production, connection overrides and an unexpected bucket', () => {
   requireStagingTarget(staging);
   for (const override of [
-    { GTHDF_NAMESPACE: 'gthdf-staging' }, { DATABASE_URL: 'postgres://elsewhere' },
+    { GTHF_NAMESPACE: 'gthf-staging' }, { GTHF_NAMESPACE: 'gthdf-staging' }, { DATABASE_URL: 'postgres://elsewhere' },
     { POSTGRESQL_ADDON_HOST: 'production' }, { AWS_BUCKET: 'gthdf-staging-media' },
     { CELLAR_ADDON_HOST: 'production-cellar.example' },
   ]) assert.throws(() => requireStagingTarget({ ...staging, ...override }));
+});
+
+test('renamed staging accepts the legacy variable without allowing a production override', () => {
+  const legacy = { ...staging, GTHF_NAMESPACE: undefined, GTHDF_NAMESPACE: 'gthdf-qualification', DATABASE_HOST: 'gthdf-postgres' };
+  assert.doesNotThrow(() => requireStagingTarget(legacy));
+  assert.doesNotThrow(() => requireStagingTarget({ ...legacy, GTHDF_NAMESPACE: 'gthf-qualification', DATABASE_HOST: 'gthf-postgres' }));
+  assert.throws(() => requireStagingTarget({ ...legacy, GTHF_NAMESPACE: 'gthf-staging' }));
+  assert.throws(() => requireStagingTarget({ ...legacy, DATABASE_HOST: 'production.example' }));
 });
 
 test('data preparation requires PostgreSQL explicitly', () => {
