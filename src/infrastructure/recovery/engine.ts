@@ -59,10 +59,10 @@ export class MediaRecovery {
     void operation.then(() => this.operations.delete(operation), () => this.operations.delete(operation));
     return operation;
   }
-  private context(user?: any, targetId?: number) {
+  private context(user?: any, targetId?: number, intentKey?: string) {
     const ctx = this.strapi.requestContext.get();
     const actor = actorFor(ctx, user);
-    const header = ctx?.get('Idempotency-Key');
+    const header = intentKey ?? ctx?.get('Idempotency-Key');
     if (actor.adminUserId && ctx && !header
       && /^\/upload(?:\/files(?:\/\d+(?:\/replace)?)?)?$/.test(ctx.path)) {
       throw new RecoveryError(409, 'ADMIN_RELOAD_REQUIRED', 'Actualisez l’administration avant de modifier les médias : cet onglet utilise une ancienne version.');
@@ -93,9 +93,9 @@ export class MediaRecovery {
     timer.unref();
     return async () => { clearInterval(timer); await pending; };
   }
-  private async execute(original: any, kind: OperationKind, data: any, files: any[], user?: any, oldFile?: any) {
-    const { ctx, actor, key } = this.context(user, oldFile?.id);
-    const requestHash = await requestFingerprint(kind, oldFile?.id, data, files);
+  private async execute(original: any, kind: OperationKind, data: any, files: any[], user?: any, oldFile?: any, intent?: { key: string; requestHash: string }) {
+    const { ctx, actor, key } = this.context(user, oldFile?.id, intent?.key);
+    const requestHash = intent?.requestHash ?? await requestFingerprint(kind, oldFile?.id, data, files);
     const { operation, acquired } = await this.journal.begin({ key, actor, kind, requestHash, targetId: oldFile?.id, targetVersion: oldFile ? mediaVersion(oldFile) : undefined });
     if (!acquired) {
       if (operation.state === 'committed') {
@@ -148,6 +148,9 @@ export class MediaRecovery {
   }
   upload(original: any, request: any, opts?: any) {
     return this.track(() => this.execute(original, 'upload', request.data, Array.isArray(request.files) ? request.files : [request.files], opts?.user));
+  }
+  uploadFromUrl(original: any, request: any, intent: { key: string; requestHash: string }, opts?: any) {
+    return this.track(() => this.execute(original, 'upload', request.data, request.files, opts?.user, undefined, intent));
   }
   replace(original: any, id: number, request: any, opts?: any) {
     return this.track(async () => {

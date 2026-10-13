@@ -6,8 +6,7 @@ L’issue #29 ajoute un journal média durable et un réessai conservant la mêm
 intention, y compris pour les suppressions groupées et de dossiers. Le backend et l’adaptateur admin sont implémentés ; la qualification
 réelle PostgreSQL, S3 et navigateur reste en cours dans une VM synthétique.
 Aucune panne ni livraison n’est validée en production. Les droits sont revérifiés
-avant commit et consultation. L’import URL de la médiathèque bêta inactive reste
-hors garantie de réessai client.
+avant commit et consultation. L’import URL conserve aussi une identité par entrée et retrouve son reçu avant de télécharger à nouveau la source.
 
 ## Synthèse
 
@@ -83,7 +82,7 @@ de writers CMS anciens et nouveaux, car l’ancienne version ignore les clés.
 Les services médias sont toujours journalisés, y compris depuis l’API, l’import URL
 et la suppression groupée. Les clients API hors admin peuvent omettre la clé :
 une nouvelle clé est alors créée, sans garantie de dédupliquer un nouveau POST
-après réponse perdue. L’import URL de l’interface bêta inactive est hors garantie de réessai client.
+après réponse perdue. L’import URL SSE utilise une clé par URL, conservée par l’admin ; chaque reçu est récupérable séparément.
 La suppression groupée admin exige sa clé dès le contrôleur, même pour un dossier vide.
 Le protocole parent et ses limites sont détaillés ci-dessous.
 
@@ -242,3 +241,30 @@ suppression multiple. Seul le processus qui vient de committer les émet : le
 rejeu d’un reçu ne relance pas ces effets. Ils restent informatifs et best-effort,
 comme les hooks du fournisseur : une coupure entre commit et émission peut perdre
 un événement. Le reçu SQL et la reprise métier ne dépendent pas de leur livraison.
+
+
+### Import URL SSE et reçus individuels
+
+`POST /upload/actions/upload-from-urls` reçoit `{urls, folderId, operationKeys}` :
+1 à 20 URL HTTP(S), autant de clés UUID distinctes et un dossier positif ou `null`.
+L’absence des clés renvoie `409 ADMIN_RELOAD_REQUIRED` avant les en-têtes SSE.
+Les URL normalisées et le dossier sont liés par une empreinte au reçu `upload`.
+Chaque entrée est indépendante : le client peut reprendre une seule URL avec sa
+clé, sans nouvelle table de lot. Les propriétaires, droits courants et conflits
+sont vérifiés avant le flux puis avant chaque entrée. Un reçu committed est rendu
+avant tout téléchargement ; pending/failed ne déclenchent pas de refetch.
+
+Un reçu interrupted permet une nouvelle tentative immuable de la même URL. Si la
+source distante a changé entre ces tentatives, les octets peuvent changer avant
+le premier commit réussi ; un résultat déjà committed reste définitivement le
+résultat de cette intention. Une nouvelle sélection volontaire utilise une autre
+clé, même pour une URL identique. Le service de téléchargement Strapi conserve ses
+protections SSRF, taille, durée et MIME. Les erreurs de dépendance ne publient pas
+de détails de connexion.
+
+Les événements SSE conservent `file:fetching`, `file:uploading`, `file:complete`,
+`file:error` et `stream:complete`. Complete/error ajoutent `operationKey` ; complete
+indique `replayed`, error indique `code` et `retryable`. L’admin consulte le reçu
+avant de renvoyer et ne relance pas la génération de métadonnées sur un replay.
+Une coupure du flux peut laisser certaines entrées sans tentative : leurs clés
+persistées permettent de les distinguer des entrées déjà committed.

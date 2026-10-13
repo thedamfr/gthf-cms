@@ -8,13 +8,13 @@ export async function emitCommittedMediaEvent(strapi: any, kind: OperationKind, 
   for (const media of Array.isArray(result) ? result : [result]) {
     try {
       const output = await sanitize.sanitizers.defaultSanitizeOutput({ schema: strapi.getModel(FILE_UID), getModel: (uid) => strapi.getModel(uid) }, media);
-      strapi.eventHub.emit(`media.${kind === 'upload' ? 'create' : kind === 'replace' ? 'update' : 'delete'}`, { media: output });
+      void Promise.resolve(strapi.eventHub.emit(`media.${kind === 'upload' ? 'create' : kind === 'replace' ? 'update' : 'delete'}`, { media: output })).catch(() => {});
     } catch {}
   }
 }
 export async function emitCommittedBatchEvents(strapi: any, batch: MediaBatch, result: any) {
   if (result.folders.length) {
-    try { strapi.eventHub.emit('media-folder.delete', { folders: result.folders }); } catch {}
+    try { void Promise.resolve(strapi.eventHub.emit('media-folder.delete', { folders: result.folders })).catch(() => {}); } catch {}
   }
   const rootAssetNumber = batch.manifest.files.filter(({ file }) => batch.input.fileIds.includes(file.id)).length;
   if (rootAssetNumber + result.folders.length > 1) {

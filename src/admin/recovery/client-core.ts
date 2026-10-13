@@ -2,7 +2,8 @@ export type MediaIntent = {
   key: string; owner: string; path: string; method: 'POST' | 'DELETE'; shape: 'array' | 'single' | 'bulk';
   files: { name: string; size: number; type: string }[]; fields: [string, string][];
   status: 'pending' | 'committed' | 'interrupted' | 'failed'; createdAt: string; message?: string;
-  kind?: 'bulk-delete'; payload?: BulkDeletePayload; progress?: BulkProgress;
+  kind?: 'bulk-delete' | 'url-upload'; payload?: BulkDeletePayload; progress?: BulkProgress;
+  sourceUrl?: string; folderId?: number | null;
 };
 export type BulkDeletePayload = { fileIds: number[]; folderIds: number[] };
 export type BulkProgress = { total: number; committed: number; failed: number; children: { key: string; id: number; status: 'pending' | 'committed' | 'failed'; error?: string }[] };
@@ -31,8 +32,8 @@ export class PendingMediaError extends Error {
 }
 export function safeMediaPath(url: string, base: string) {
   const target = new URL(url, base);
-  if (target.origin !== new URL(base).origin || !/^\/upload(?:\/files(?:\/\d+(?:\/replace)?)?|\/actions\/bulk-delete)?$/.test(target.pathname)
-    || (target.search && (target.pathname === '/upload/actions/bulk-delete' || !/^\?id=\d+$/.test(target.search)))) throw new Error('Invalid media operation endpoint');
+  if (target.origin !== new URL(base).origin || !/^\/upload(?:\/files(?:\/\d+(?:\/replace)?)?|\/actions\/(?:bulk-delete|upload-from-urls))?$/.test(target.pathname)
+    || (target.search && (target.pathname.startsWith('/upload/actions/') || !/^\?id=\d+$/.test(target.search)))) throw new Error('Invalid media operation endpoint');
   return target.pathname + target.search;
 }
 export function intentFromForm(options: { key: string; owner: string; path: string; method?: 'POST' | 'DELETE'; shape: 'array' | 'single'; formData?: FormData }): MediaIntent {

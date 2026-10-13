@@ -49,12 +49,14 @@ export default function RecoveryPage() {
     {unavailable && <p role="status">Certains résultats sont temporairement inaccessibles. Les envois restent conservés dans cet onglet.</p>}
     {!items.length && <p>Aucun envoi à vérifier dans cet onglet.</p>}
     <ul>{items.map((item) => <li key={item.key} style={{ margin: '1.5rem 0' }}>
-      <strong>{item.kind === 'bulk-delete' ? `Suppression en lot (${item.payload?.fileIds.length || 0} médias, ${item.payload?.folderIds.length || 0} dossiers sélectionnés)` : item.files.map((file) => file.name).join(', ') || 'Suppression de média'}</strong>
+      <strong>{item.kind === 'bulk-delete' ? `Suppression en lot (${item.payload?.fileIds.length || 0} médias, ${item.payload?.folderIds.length || 0} dossiers sélectionnés)` : item.kind === 'url-upload' ? `Import depuis une adresse : ${item.sourceUrl}` : item.files.map((file) => file.name).join(', ') || 'Suppression de média'}</strong>
       <p role="status">{labels[item.status]}</p>
       {item.progress && <><p>{item.progress.committed} / {item.progress.total} médias supprimés ; {item.progress.failed} en échec. {item.status !== 'committed' && 'Le lot et ses dossiers ne sont pas encore entièrement supprimés.'}</p>
         <ul>{item.progress.children.map((child) => <li key={child.key}>Média {child.id} : {labels[child.status]}{child.error && ` (${child.error})`}</li>)}</ul></>}
       {item.message && <p role="alert">{item.message} — consultez le résultat partiel avant de créer une nouvelle sélection.</p>}
-      {item.status === 'interrupted' && (item.method === 'DELETE' || item.kind === 'bulk-delete'
+      {item.status === 'interrupted' && (item.kind === 'url-upload'
+        ? <button disabled={busy !== null} onClick={() => void resume(item, [])}>Reprendre cet import</button>
+        : item.method === 'DELETE' || item.kind === 'bulk-delete'
         ? <button disabled={busy !== null} onClick={() => void resume(item, [])}>Reprendre la suppression</button>
         : <label>Sélectionner les mêmes fichiers pour reprendre <input aria-label="Fichiers de la reprise" type="file" multiple={item.files.length > 1} disabled={busy !== null}
           onChange={(event) => { if (event.target.files?.length) void resume(item, Array.from(event.target.files)); }} /></label>)}

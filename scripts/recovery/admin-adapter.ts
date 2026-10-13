@@ -71,6 +71,22 @@ export function adaptAdminUpload(source: string, name: string) {
       'await runMediaIntent({ url, formData, signal: abortController.signal, shape: "single", key: entry.operationKey }, (key) => uploadFileViaXHR(url, token, formData, abortController.signal, (bytes)=>batcher.schedule(bytes), key))');
     once('await uploadFileViaXHR(url, token, formData, new AbortController().signal, ()=>{})',
       'await runMediaIntent({ url, formData, shape: "single" }, (key) => uploadFileViaXHR(url, token, formData, new AbortController().signal, ()=>{}, key))');
+    once('const fetchUrlUploadStream = async ({ token, urls, folderId, signal })=>{',
+      'const fetchUrlUploadStream = async ({ token, urls, folderId, signal, operationKeys })=>{');
+    once('            urls,\n            folderId\n        }),', '            urls,\n            folderId,\n            operationKeys\n        }),');
+    once('const processSSEStream = async ({ response, dispatch, uploadId, generateAiMetadata, folderId })=>{',
+      'const processSSEStream = async ({ response, dispatch, uploadId, generateAiMetadata, folderId, recoveryIntents })=>{');
+    once('            const parsed = JSON.parse(data);\n            const index = parsed.index;',
+      '            const parsed = JSON.parse(data);\n            observeUrlUploadEvent(recoveryIntents, event, parsed);\n            const index = parsed.index;');
+    once('                            file: payload.file,\n                            index,\n                            uploadId,\n                            enabled: generateAiMetadata,',
+      '                            file: payload.file,\n                            index,\n                            uploadId,\n                            enabled: generateAiMetadata && !payload.replayed,');
+    once('    return streamResult;\n};', '    return requireUrlStreamCompletion(streamResult, recoveryIntents);\n};');
+    once('                    try {\n                        // Send URLs to server for fetching and uploading',
+      '                    try {\n                        const recoveryIntents = await prepareUrlUploadIntents({ urls, folderId });\n                        // Send URLs to server for fetching and uploading');
+    once('                        const response = await fetchUrlUploadStream({\n                            token,\n                            urls,\n                            folderId,',
+      '                        const response = await fetchUrlUploadStream({\n                            token,\n                            urls: recoveryIntents.map((intent) => intent.sourceUrl),\n                            folderId,\n                            operationKeys: recoveryIntents.map((intent) => intent.key),');
+    once('                        const streamResult = await processSSEStream({\n                            response,',
+      '                        const streamResult = await processSSEStream({\n                            recoveryIntents,\n                            response,');
   } else if (name === 'future/services/assets.mjs') {
     once("query: (id)=>({\n                        url: `/upload/files/${id}`,\n                        method: 'DELETE'\n                    }),", `queryFn: async (id) => {
                     try {
@@ -86,7 +102,7 @@ export function adaptAdminUpload(source: string, name: string) {
                 },`);
     code = "import { getFetchClient } from '@strapi/admin/strapi-admin';\n" + code;
   }
-  return "import { runMediaIntent, runBulkDeleteIntent, bulkSelectionKey } from '@gthf/media-recovery';\n" + code;
+  return "import { runMediaIntent, runBulkDeleteIntent, bulkSelectionKey, prepareUrlUploadIntents, observeUrlUploadEvent, requireUrlStreamCompletion } from '@gthf/media-recovery';\n" + code;
 }
 export function adminRecoveryPlugin(root: string) {
   const packageRoot = path.dirname(require.resolve('@strapi/upload/package.json'));

@@ -3,6 +3,7 @@ import { createRecoveryStorage } from '../../infrastructure/recovery/storage';
 import { createFaultGate } from '../../infrastructure/recovery/fault-gate';
 import { authorizeAdminMediaReceipt, authorizeMediaOperation } from '../../infrastructure/recovery/authorization';
 import { batchPermissionOperation } from '../../infrastructure/recovery/batches';
+import { createUrlImportController } from '../../infrastructure/recovery/url-import';
 import { FILE_UID, Operation, RecoveryError } from '../../infrastructure/recovery/types';
 
 // Private extension contracts are deliberately pinned and checked by tests/build.
@@ -100,6 +101,7 @@ export default (plugin: any) => {
     }
     return destroyFile.call(this, ctx);
   };
+  plugin.controllers['admin-upload'].uploadFromUrls = (ctx: any) => createUrlImportController(application, recovery)(ctx);
   plugin.controllers['admin-folder-file'].deleteMany = async (ctx: any) => {
     const result = await recovery.bulkDelete(ctx);
     const pmFile = application.service('admin::permission').createPermissionsManager({ ability: ctx.state.userAbility, action: 'plugin::upload.read', model: FILE_UID });

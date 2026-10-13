@@ -108,7 +108,8 @@ test('a committed batch emits its folder event and original bulk metric once aft
   const result = await instance.process(input);
   assert.deepEqual(order, ['committed', 'folder-event']); assert.deepEqual(events, [['media-folder.delete', { folders: result.folders }]]);
   assert.deepEqual(metric, [['didBulkDeleteMediaLibraryElements', { eventProperties: { rootFolderNumber: 1, rootAssetNumber: 1, totalFolderNumber: 2, totalAssetNumber: 2 } }]]);
-  instance.strapi.eventHub.emit = () => { throw new Error('informational event unavailable'); };
+  instance.strapi.eventHub.emit = async () => { throw new Error('informational event unavailable'); };
   instance.strapi.plugin = () => ({ service: () => ({ trackUsage: async () => { throw new Error('telemetry unavailable'); } }) });
   assert.deepEqual(await instance.process(input), result, 'post-commit effects cannot turn the durable result into failure');
+  await new Promise((resolve) => setImmediate(resolve));
 });

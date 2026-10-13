@@ -1,5 +1,6 @@
 import { getFetchClient } from '@strapi/admin/strapi-admin';
-import { bulkIntent, canonicalBulkPayload, executeIntent, intentFromForm, BulkDeletePayload, MediaIntent, MediaReceipt, safeMediaPath } from './client-core';
+import { bulkIntent, canonicalBulkPayload, executeIntent, intentFromForm, BulkDeletePayload, MediaIntent, MediaReceipt, PendingMediaError, safeMediaPath } from './client-core';
+import { applyUrlUploadEvent, canonicalUrlSelection, urlIntent, urlUploadResult } from './url-client-core';
 
 const prefix = 'gthf-media-intents-v1:';
 const backend = () => new URL((window as any).strapi.backendURL || '/', window.location.origin).href;
@@ -61,11 +62,53 @@ export async function runBulkDeleteIntent(options: { payload: BulkDeletePayload;
     receipt: fetchReceipt, save: saveIntent, signal: options.signal, receiptFirst: Boolean(existing) });
 }
 
+const urlSelections = new WeakMap<object, { signature: string; keys: string[] }>();
+export async function prepareUrlUploadIntents(options: { urls: string[]; folderId?: number | null }) {
+  const selection = canonicalUrlSelection(options.urls, options.folderId);
+  const owner = await currentOwner();
+  const signature = JSON.stringify({ owner, ...selection });
+  let identity = urlSelections.get(options.urls);
+  if (!identity || identity.signature !== signature) {
+    identity = { signature, keys: selection.urls.map(() => crypto.randomUUID()) }; urlSelections.set(options.urls, identity);
+  }
+  const previous = readIntents(owner);
+  const intents = selection.urls.map((url, index) => {
+    const key = identity!.keys[index];
+    const existing = previous.find((item) => item.key === key);
+    if (existing && (existing.kind !== 'url-upload' || existing.sourceUrl !== url || existing.folderId !== selection.folderId)) throw new Error('Unexpected saved URL upload identity');
+    return existing || urlIntent({ key, owner, url, folderId: selection.folderId });
+  });
+  for (const intent of intents) saveIntent(intent); // Persist the entire selection before its first SSE request.
+  return intents;
+}
+export function observeUrlUploadEvent(intents: MediaIntent[], event: string, value: any) {
+  const intent = applyUrlUploadEvent(intents, event, value);
+  if (intent) saveIntent(intent);
+}
+export function requireUrlStreamCompletion(result: any, intents: MediaIntent[]) {
+  if (!result) throw new PendingMediaError(intents[0].key);
+  return result;
+}
+
 export async function resumeIntent(intent: MediaIntent, selected: File[] = []) {
   safeMediaPath(intent.path, backend());
   if (intent.owner !== await currentOwner()) throw new Error('Cet envoi appartient à une autre session.');
   if (intent.files.length !== selected.length || intent.files.some((file, index) => file.name !== selected[index].name || file.size !== selected[index].size)) {
     throw new Error('Sélectionnez les mêmes fichiers, dans le même ordre.');
+  }
+  if (intent.kind === 'url-upload') {
+    const selection = canonicalUrlSelection([intent.sourceUrl!], intent.folderId);
+    return executeIntent(intent, { receiptFirst: true, receipt: fetchReceipt, save: saveIntent,
+      transport: async (key) => {
+        const response = await getFetchClient().post<string>(intent.path, { ...selection, operationKeys: [key] },
+          { responseType: 'text', validateStatus: (status) => status === 409, signal: AbortSignal.timeout(30_000) });
+        if (response.status === 409) {
+          const failure = JSON.parse(response.data)?.error;
+          throw Object.assign(new Error(failure?.message || 'Cette identité ne correspond pas à cet import.'),
+            { status: 409, code: failure?.name || 'IDEMPOTENCY_CONFLICT' });
+        }
+        return urlUploadResult(response.data, intent);
+      } });
   }
   if (intent.kind === 'bulk-delete') {
     if (!intent.payload || selected.length) throw new Error('Invalid saved bulk selection');

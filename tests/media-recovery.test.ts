@@ -155,3 +155,29 @@ test('a streamed URL import keeps its internal operation key without mutating al
   assert.match(first.key, /^[a-f0-9-]{36}$/); assert.notEqual(first.key, second.key);
   assert.equal(first.actor.id, 'admin:4'); assert.equal(headerWrites, 0);
 });
+
+test('URL media uses its explicit source intent and durably prepares immutable bytes before S3', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-url-engine-'));
+  try {
+    const filepath = path.join(directory, 'source.txt'); await fs.writeFile(filepath, 'isolated URL body');
+    const ctx = { path: '/upload/actions/upload-from-urls', headerSent: true, state: { userAbility: {}, user: { id: 4 } }, get: () => '', set() { assert.fail('SSE headers are already sent'); } };
+    const strapi = { requestContext: { get: () => ctx }, db: { connection: {} }, config: { get: () => ({ provider: 'aws-s3' }) },
+      getModel: () => ({ attributes: Object.fromEntries(['name', 'mime', 'size', 'ext', 'hash', 'url', 'provider', 'provider_metadata', 'formats', 'folder'].map((key) => [key, {}])) }),
+      plugin: () => ({ service: (name: string) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => {} } }) };
+    const order: string[] = []; let beginInput: any;
+    const storage = { key: (file: any) => file.hash + file.ext, url: (key: string) => 'https://media.example/' + key,
+      put: async (_object: any, body: string) => { order.push('S3'); assert.equal(await fs.readFile(body, 'utf8'), 'isolated URL body'); } };
+    const engine = new MediaRecovery(strapi, storage as any);
+    const operation: any = { key, attempt, state: 'preparing' };
+    engine.journal.begin = async (input: any) => { beginInput = input; return { acquired: true, operation }; };
+    engine.journal.prepare = async (_operation: any, manifest: any) => { order.push('prepared'); operation.manifest = manifest; };
+    engine.journal.assertLease = async () => {};
+    engine.journal.commit = async () => { order.push('committed'); return [{ id: 17 }]; };
+    const original = { formatFileInfo: async ({ filename, type, size }: any, info: any) => ({ name: filename, mime: type, size, ext: '.txt', ...info }) };
+    const sourceHash = sha256('url-import-v1 immutable source and folder');
+    const result = await engine.uploadFromUrl(original, { data: { fileInfo: { folder: 9 } }, files: [{ filepath, originalFilename: 'source.txt', mimetype: 'text/plain', size: 17 }] }, { key, requestHash: sourceHash });
+    assert.equal(beginInput.key, key); assert.equal(beginInput.requestHash, sourceHash); assert.equal(beginInput.actor.id, 'admin:4');
+    assert.deepEqual(order, ['prepared', 'S3', 'committed']); assert.deepEqual(result, [{ id: 17 }]);
+    assert.equal(operation.manifest.files[0].values.folder, 9);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
