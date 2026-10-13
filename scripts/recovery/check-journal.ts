@@ -56,6 +56,17 @@ async function main() {
     await assert.rejects(journal.assertLease(first.operation), (error: any) => error.code === 'OPERATION_LEASE_LOST');
     checks.push('a previous request is fenced when the same process recovers its expired lease');
 
+    checkpoint('lease expiry inside an already-started SQL transaction');
+    const shortInput = { ...input, key: randomUUID() }; keys.push(shortInput.key);
+    const shortLease = (await journal.begin(shortInput)).operation;
+    await db(MEDIA_OPERATION_TABLE).where({ key: shortInput.key }).update({ lease_until: db.raw("clock_timestamp() + interval '1 second'") });
+    await db.transaction(async (trx) => {
+      await journal.assertLease(shortLease, trx);
+      await trx.raw('select pg_sleep(1.1)');
+      await assert.rejects(journal.assertLease(shortLease, trx), (error: any) => error.code === 'OPERATION_LEASE_LOST');
+    });
+    checks.push('lease checks use wall-clock time even inside an old transaction');
+
     checkpoint('real SQL rollback after file insertion');
     const hash = `gthf_journal_test_${randomUUID().replace(/-/g, '')}`;
     hashes.push(hash);

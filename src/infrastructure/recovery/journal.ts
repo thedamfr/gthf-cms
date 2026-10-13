@@ -74,13 +74,13 @@ export class MediaJournal {
   }
   async assertLease(operation: Pick<Operation, 'key' | 'attempt' | 'lease_owner'>, trx = this.db) {
     const row = await trx(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: operation.lease_owner })
-      .where('lease_until', '>', trx.fn.now()).first();
+      .where('lease_until', '>', trx.raw('clock_timestamp()')).first();
     if (!row || !['preparing', 'prepared'].includes(row.state)) throw new RecoveryError(409, 'OPERATION_LEASE_LOST', 'This media operation is being recovered');
     return row as Operation;
   }
   async heartbeat(operation: Pick<Operation, 'key' | 'attempt' | 'lease_owner'>) {
     const count = await this.db(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: operation.lease_owner })
-      .whereIn('state', ['preparing', 'prepared']).where('lease_until', '>', this.db.fn.now())
+      .whereIn('state', ['preparing', 'prepared']).where('lease_until', '>', this.db.raw('clock_timestamp()'))
       .update({ lease_until: this.lease(), updated_at: this.db.fn.now() });
     if (!count) throw new RecoveryError(409, 'OPERATION_LEASE_LOST', 'This media operation is being recovered');
   }
@@ -164,7 +164,7 @@ export class MediaJournal {
     });
   }
   async finishCleanup(id: string, leaseOwner: string) {
-    const count = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner }).where('lease_until', '>', this.db.fn.now())
+    const count = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner }).where('lease_until', '>', this.db.raw('clock_timestamp()'))
       .delete();
     if (!count) throw new RecoveryError(409, 'CLEANUP_LEASE_LOST', 'Cleanup will be resumed');
   }
