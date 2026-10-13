@@ -69,7 +69,7 @@ des pods. Ce contrôle reste à exécuter lors de la rédaction de cette version
 ## Activation et retour arrière
 
 Le workflow CMS utilise le publieur frontend épinglé au commit
-`636d7b6a6226d225141df69d57d45c6bc344f7c7`, fusionné dans la PR #36, et conserve ce SHA
+`60efe9c176fb2ebb5b0281533728726d1be584a0`, revu dans la PR frontend #41, et conserve ce SHA
 dans chaque candidat. Toute mise à jour de ce publieur demande une modification
 relue du workflow CMS ; un nouveau commit frontend ne reçoit donc pas implicitement
 le jeton d’écriture CMS. Le service

@@ -49,8 +49,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: thedamfr/gthf-frontend
-          # Shared publisher reviewed and merged in frontend PR #36.
-          ref: 636d7b6a6226d225141df69d57d45c6bc344f7c7
+          # Shared GTHF publisher reviewed in frontend PR #41.
+          ref: 60efe9c176fb2ebb5b0281533728726d1be584a0
           path: deployer
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
