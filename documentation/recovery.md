@@ -20,7 +20,10 @@ tentatives : un réessai ne peut pas écraser une modification concurrente. Le j
 par tentative. Les originaux et variantes sont hashés et déposés dans un répertoire
 temporaire privé, puis envoyés en flux après journalisation : les corps du lot ne
 sont pas conservés ensemble dans le heap. Ce spool est supprimé après traitement ;
-les anciens objets ne sont nettoyés qu’après validation SQL. Les clés de tentatives
+les versions remplacées sont conservées tant que le fichier logique existe. Sa
+suppression explicite libère toutes ses versions après validation SQL. Les anciennes
+URL restent donc lisibles, et le stockage augmente avec les remplacements : remplacer
+une image ne révoque pas ses anciennes versions, il faut supprimer le média. Les clés de tentatives
 interrompues restent surveillées durablement : un PUT dont la réponse a expiré peut
 encore aboutir côté S3 après une première vérification d’absence. Ce suivi implique
 des lectures S3 récurrentes et une croissance du journal, explicitées ci-dessous.
@@ -109,8 +112,14 @@ moins un HEAD par balayage ; un objet tardif possédé ajoute DELETE puis HEAD. 
 et le volume de ces suivis augmentent donc avec les tentatives interrompues. Ils ne
 sont pas purgés automatiquement faute de borne attestée de terminaison du PUT serveur.
 Les nouvelles tentatives ont d’autres clés ; les collisions étrangères restent intactes.
-Les objets remplacés restent disponibles dix minutes pour les pages encore en cache ;
-le délai de reprise métier de 300 secondes n’abrège pas cette rétention.
+Les versions remplacées portent `retain_file_id` et ne sont pas sondées sur S3 tant
+que ce fichier existe. Cela couvre les caches publics longs et leur fallback pendant
+une partition réseau, sans diminuer la disponibilité. Le DELETE autorisé du fichier
+libère les nettoyages de toutes les versions, qui restent reprenables après crash.
+La migration additive rattache les nettoyages de remplacements encore présents à leur
+fichier ; elle ne recrée pas des objets déjà supprimés avant cette version.
+L’image annonce `io.gthf.media-recovery=2` : un runtime v1 ignore cette rétention et ne
+doit jamais être utilisé en rollback dès présence de `retain_file_id`.
 
 La commande E2E existante reste `npm run test:e2e -- staging`, dépendante du clone
 frontend voisin. La campagne isolée et ses preuves de SIGKILL, réponse perdue,

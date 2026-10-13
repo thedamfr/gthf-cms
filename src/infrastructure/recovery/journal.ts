@@ -47,6 +47,14 @@ export class MediaJournal {
       if (!await trx.schema.hasColumn(MEDIA_CLEANUP_TABLE, 'recurring')) {
         await trx.schema.alterTable(MEDIA_CLEANUP_TABLE, (table) => table.boolean('recurring').notNullable().defaultTo(false));
       }
+      if (!await trx.schema.hasColumn(MEDIA_CLEANUP_TABLE, 'retain_file_id')) {
+        await trx.schema.alterTable(MEDIA_CLEANUP_TABLE, (table) => table.integer('retain_file_id').nullable());
+        await trx.raw(`UPDATE ?? AS c SET retain_file_id = o.target_id, not_before = clock_timestamp()
+          FROM ?? AS o WHERE c.operation_key = o.key AND c.attempt = o.attempt
+          AND c.state = 'pending' AND c.recurring = false
+          AND o.kind = 'replace' AND o.state = 'committed' AND o.target_id IS NOT NULL`,
+        [MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE]);
+      }
     });
   }
   lease(trx = this.db) { return trx.raw("clock_timestamp() + (? * interval '1 millisecond')", [LEASE_MS]); }
@@ -102,10 +110,10 @@ export class MediaJournal {
     });
     operation.manifest = manifest; operation.state = 'prepared';
   }
-  private async queueCleanup(trx: any, operation: Operation, objects: StoredObject[], delayMs = 0, recurring = false) {
+  private async queueCleanup(trx: any, operation: Operation, objects: StoredObject[], delayMs = 0, recurring = false, retainFileId: number | null = null) {
     if (!objects.length) return;
     await trx(MEDIA_CLEANUP_TABLE).insert({ id: randomUUID(), operation_key: operation.key, attempt: operation.attempt,
-      objects: JSON.stringify(objects), recurring, not_before: trx.raw("clock_timestamp() + (? * interval '1 millisecond')", [delayMs]) });
+      objects: JSON.stringify(objects), recurring, retain_file_id: retainFileId, not_before: trx.raw("clock_timestamp() + (? * interval '1 millisecond')", [delayMs]) });
   }
   async interrupt(operation: Operation, permanent = false, reason = 'TRANSFER_INTERRUPTED') {
     await this.db.transaction(async (trx) => {
@@ -146,7 +154,7 @@ export class MediaJournal {
         }
       }
       const receipt = row.kind === 'upload' ? results : results[0];
-      await this.queueCleanup(trx, row, row.manifest.obsolete, row.kind === 'replace' ? 600_000 : 0);
+      await this.queueCleanup(trx, row, row.manifest.obsolete, 0, false, row.kind === 'replace' ? row.target_id : null);
       await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({ state: 'committed', receipt: JSON.stringify(receipt),
         lease_owner: null, lease_until: null, updated_at: trx.fn.now() });
       return receipt;
@@ -164,11 +172,15 @@ export class MediaJournal {
       return operationRow(claimed);
     });
   }
-  async claimCleanup() {
+  async claimCleanup(operationKey?: string) {
     return this.db.transaction(async (trx) => {
-      const row = await trx(MEDIA_CLEANUP_TABLE).where({ state: 'pending' }).where('not_before', '<=', trx.fn.now())
+      const fileTable = this.strapi.db.metadata.get(FILE_UID).tableName;
+      const query = trx(MEDIA_CLEANUP_TABLE).where({ state: 'pending' }).where('not_before', '<=', trx.fn.now())
         .andWhere((q) => q.whereNull('lease_until').orWhere('lease_until', '<=', trx.fn.now()))
-        .orderBy('not_before').orderBy('created_at').forUpdate().skipLocked().first();
+        .andWhere((q) => q.whereNull('retain_file_id').orWhereNotExists(trx.select(1).from(fileTable)
+          .whereColumn(`${fileTable}.id`, `${MEDIA_CLEANUP_TABLE}.retain_file_id`)));
+      if (operationKey) query.where({ operation_key: operationKey });
+      const row = await query.orderBy('not_before').orderBy('created_at').forUpdate().skipLocked().first();
       if (!row) return undefined;
       const [claimed] = await trx(MEDIA_CLEANUP_TABLE).where({ id: row.id }).update({ lease_owner: randomUUID(),
         lease_until: this.lease(trx), updated_at: trx.fn.now() }).returning('*');

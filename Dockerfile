@@ -17,7 +17,7 @@ RUN npm run build \
     && rm -rf /root/.npm .cache .tmp
 
 FROM ${NODE_IMAGE} AS runtime
-LABEL io.gthf.media-recovery="1"
+LABEL io.gthf.media-recovery="2"
 WORKDIR /app
 ARG GTHDF_REVISION=development
 ARG GTHF_REVISION=${GTHDF_REVISION}

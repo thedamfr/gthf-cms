@@ -21,7 +21,7 @@ function database(row: any) {
   connection.raw = () => 'test SQL expression';
   connection.fn = { now: () => 'test current time' };
   connection.transaction = async (action) => action(connection);
-  return { db: { connection } };
+  return { db: { connection, metadata: { get: () => ({ tableName: 'files' }) } } };
 }
 const row = { key, actor: 'admin:4', kind: 'upload', request_hash: 'same', target_id: null, state: 'committed',
   manifest: JSON.stringify(manifest), receipt: JSON.stringify(receipt), failure: null };

@@ -139,13 +139,70 @@ async function main() {
     assert.equal(refusedRetry.operation.failure, 'MEDIA_CHANGED');
     assert.equal((await journal.get(replacement.key)).attempt, operation.attempt);
     checks.push('retrying an interrupted key cannot re-baseline a concurrently edited target');
+    checkpoint('replacement histories A to B to C remain until the logical file is deleted');
+    let version = changed;
+    const historyKeys: string[] = [];
+    const historicalObjects = [version.hash + '.txt'];
+    for (const label of ['B', 'C']) {
+      const versionInput = { key: randomUUID(), actor, kind: 'replace' as const, requestHash: sha256(randomUUID()), targetId: version.id, targetVersion: mediaVersion(version) };
+      keys.push(versionInput.key); historyKeys.push(versionInput.key);
+      const replacing = (await journal.begin(versionInput)).operation;
+      const nextHash = `gthf_journal_test_${randomUUID().replace(/-/g, '')}`; hashes.push(nextHash);
+      await journal.prepare(replacing, { files: [{ values: { ...manifest.files[0].values, hash: nextHash, name: label, url: `https://example.invalid/${nextHash}.txt` },
+        targetId: version.id, previousHash: version.hash, previousVersion: mediaVersion(version) }], objects: [], obsolete: [{ key: version.hash + '.txt' }] });
+      version = await journal.commit(replacing);
+      historicalObjects.push(version.hash + '.txt');
+      const same = await journal.begin(versionInput);
+      assert.equal(same.acquired, false); assert.equal(same.operation.receipt.id, version.id);
+      for (const historyKey of historyKeys) assert.equal(await journal.claimCleanup(historyKey), undefined);
+    }
+    checks.push('A to B to C keeps the same file ID and unique receipts while historical cleanup stays unclaimed');
+
+    const deletion = async (file: any) => {
+      const deletionInput = { key: randomUUID(), actor, kind: 'delete' as const, requestHash: sha256(randomUUID()), targetId: file.id, targetVersion: mediaVersion(file) };
+      keys.push(deletionInput.key);
+      const deleting = (await journal.begin(deletionInput)).operation;
+      await journal.prepare(deleting, { files: [{ values: {}, targetId: file.id, previousHash: file.hash, previousVersion: mediaVersion(file) }], objects: [], obsolete: [{ key: file.hash + '.txt' }] });
+      return { deletionInput, deleting };
+    };
+    checkpoint('revoked or stale deletion cannot release historical media');
+    const deniedDelete = await deletion(version);
+    await assert.rejects(refused.commit(deniedDelete.deleting), (error: any) => error.code === 'AUTHORIZATION_REVOKED');
+    await journal.interrupt(deniedDelete.deleting, true, 'AUTHORIZATION_REVOKED');
+    const staleDelete = await deletion(version);
+    await application.db.query(FILE_UID).update({ where: { id: version.id }, data: { name: 'editorial change before deletion' } });
+    await assert.rejects(journal.commit(staleDelete.deleting), (error: any) => error.code === 'MEDIA_CHANGED');
+    await journal.interrupt(staleDelete.deleting, true, 'MEDIA_CHANGED');
+    for (const historyKey of historyKeys) assert.equal(await journal.claimCleanup(historyKey), undefined);
+    assert.equal(await application.db.query(FILE_UID).count({ where: { id: version.id } }), 1);
+    checks.push('revocation and a concurrent edit both refuse deletion without releasing historical media');
+
+    checkpoint('authorized deletion releases current and historical cleanup only after its commit');
+    version = await application.db.query(FILE_UID).findOne({ where: { id: version.id } });
+    const authorizedDelete = await deletion(version);
+    const deletedFile = await journal.commit(authorizedDelete.deleting);
+    assert.equal(deletedFile.id, version.id);
+    const deleteReplay = await journal.begin(authorizedDelete.deletionInput);
+    assert.equal(deleteReplay.acquired, false); assert.equal(deleteReplay.operation.receipt.id, version.id);
+    assert.equal(await application.db.query(FILE_UID).count({ where: { id: version.id } }), 0);
+    const releasedObjects: string[] = [];
+    for (const cleanupKey of [...historyKeys, authorizedDelete.deletionInput.key]) {
+      const released = await journal.claimCleanup(cleanupKey);
+      assert.ok(released); assert.equal(released.recurring, false);
+      releasedObjects.push(...released.objects.map((object: any) => object.key));
+      await journal.finishCleanup(released.id, released.lease_owner);
+      assert.equal(await db(MEDIA_CLEANUP_TABLE).where({ id: released.id }).first(), undefined);
+    }
+    assert.deepEqual(releasedObjects.sort(), historicalObjects.sort());
+    checks.push('one authorized delete receipt releases A, B and C after SQL commit without duplicating the operation');
+
     checkpoint('interrupted object cleanup retains its immutable keys after an empty sweep');
     const cleanupInput = { ...input, key: randomUUID() }; keys.push(cleanupInput.key);
     const cleanupOperation = (await journal.begin(cleanupInput)).operation;
     const abandonedObject = { key: `qualification/${cleanupInput.key}.txt`, sha256: sha256('fixture'), bytes: 7 };
     await journal.prepare(cleanupOperation, { files: [], objects: [abandonedObject], obsolete: [] });
     await journal.interrupt(cleanupOperation);
-    const cleanup = await journal.claimCleanup();
+    const cleanup = await journal.claimCleanup(cleanupInput.key);
     assert.equal(cleanup.operation_key, cleanupInput.key);
     assert.equal(cleanup.recurring, true);
     assert.deepEqual(cleanup.objects, [abandonedObject]);
@@ -155,7 +212,7 @@ async function main() {
     assert.equal(retained.lease_owner, null);
     assert.ok(new Date(retained.not_before).getTime() > Date.now());
     await db(MEDIA_CLEANUP_TABLE).where({ id: cleanup.id }).update({ not_before: db.raw("clock_timestamp() - interval '1 second'") });
-    const sweptAgain = await journal.claimCleanup();
+    const sweptAgain = await journal.claimCleanup(cleanupInput.key);
     assert.equal(sweptAgain.id, cleanup.id);
     assert.notEqual(sweptAgain.lease_owner, cleanup.lease_owner);
     checks.push('abandoned immutable object keys survive a completed sweep and are claimed again');
