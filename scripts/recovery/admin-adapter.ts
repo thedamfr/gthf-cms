@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// The adaptation is local to reviewed upload modules, never a global XHR/fetch patch.
+// Adapt reviewed Strapi modules at build time, never the browser-global XHR/fetch.
 export const ADMIN_CONTRACTS: Record<string, string> = {
   'hooks/useUpload.mjs': '0ee504ba1dbe389bcbb6b3914ff93a708f0db73647268b41dd1a9bad0aca5015',
   'hooks/useEditAsset.mjs': '22e35190ac80fb85d7434ff4bc63a93555aa882f68803529614cdbd4060aa7fe',
@@ -14,9 +14,28 @@ export const ADMIN_CONTRACTS: Record<string, string> = {
   'future/services/api.mjs': '2b09460f1af969192e83a0916edcbe1829b2af09f102274ed9d8909d961006f7',
   'future/services/assets.mjs': '4b7dd048d9b6da094b97da6e0b38dabf93218150b33393d5180557c660e1d6bb',
 };
+export const ADMIN_FETCH_CONTRACTS: Record<string, string> = {
+  'admin/src/utils/getFetchClient.mjs': 'ad3b569e34d55260760eafabb278953479e3b5e56ba720693ab4cf9c17f6a8f4',
+};
 function replaceOnce(source: string, before: string, after: string) {
   if (source.split(before).length !== 2) throw new Error('Strapi upload adaptation requires exactly one reviewed call site');
   return source.replace(before, after);
+}
+export function adaptAdminFetchClient(source: string, name: string) {
+  const expected = ADMIN_FETCH_CONTRACTS[name];
+  if (!expected) return source;
+  if (createHash('sha256').update(source).digest('hex') !== expected) throw new Error(`Unreviewed Strapi admin module: ${name}`);
+  // Strapi 5.52.3 POST drops responseType, unlike GET. Keep the existing
+  // interceptor, JSON default and withTokenRefresh; only forward this option.
+  const before = `return responseInterceptor(response, options?.validateStatus);
+            };
+            return withTokenRefresh(url, executeRequest);
+        },
+        put: async (url, data, options)=>{`;
+  return replaceOnce(source, before, before.replace(
+    'responseInterceptor(response, options?.validateStatus)',
+    'responseInterceptor(response, options?.validateStatus, options?.responseType)',
+  ));
 }
 export function adaptAdminUpload(source: string, name: string) {
   const expected = ADMIN_CONTRACTS[name];
@@ -108,11 +127,21 @@ export function adminRecoveryPlugin(root: string) {
   const packageRoot = path.dirname(require.resolve('@strapi/upload/package.json'));
   const packageInfo = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   if (packageInfo.version !== '5.52.3') throw new Error('Review the media adapter before changing Strapi upload version');
+  const adminRoot = path.dirname(require.resolve('@strapi/admin/package.json'));
+  const adminInfo = JSON.parse(fs.readFileSync(path.join(adminRoot, 'package.json'), 'utf8'));
+  if (adminInfo.version !== '5.52.3') throw new Error('Review the media adapter before changing Strapi admin version');
+  for (const name of Object.keys(ADMIN_FETCH_CONTRACTS)) adaptAdminFetchClient(fs.readFileSync(path.join(adminRoot, 'dist/admin', name), 'utf8'), name);
   // Validate every module, including the inactive beta UI, before starting a build.
   for (const name of Object.keys(ADMIN_CONTRACTS)) adaptAdminUpload(fs.readFileSync(path.join(packageRoot, 'dist/admin', name), 'utf8'), name);
   return { name: 'gthf-media-recovery', enforce: 'pre' as const,
     transform(source: string, id: string) {
       const file = id.split('?')[0];
+      const adminMarker = '/@strapi/admin/dist/admin/';
+      const adminIndex = file.lastIndexOf(adminMarker);
+      if (adminIndex >= 0) {
+        const name = file.slice(adminIndex + adminMarker.length);
+        return ADMIN_FETCH_CONTRACTS[name] ? { code: adaptAdminFetchClient(source, name), map: null } : null;
+      }
       const marker = '/@strapi/upload/dist/admin/';
       const index = file.lastIndexOf(marker);
       if (index < 0) return null;
