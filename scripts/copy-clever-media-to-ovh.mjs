@@ -9,17 +9,17 @@ import {
 } from '@aws-sdk/client-s3';
 
 const clever = process.env.CLEVER_BIN ?? 'clever';
-const cleverApp = process.env.GTHDF_CMS_CLEVER_APP
+const cleverApp = process.env.GTHF_CMS_CLEVER_APP ?? process.env.GTHDF_CMS_CLEVER_APP
   ?? 'app_67466113-4135-4892-b3f5-2a8d5a3623f2';
-const credentialsFile = process.env.GTHDF_OVH_CREDENTIALS_FILE;
-const destinationBucket = process.env.GTHDF_OVH_BUCKET ?? 'gthdf-staging-media';
-const concurrency = Number.parseInt(process.env.GTHDF_MEDIA_COPY_CONCURRENCY ?? '4', 10);
+const credentialsFile = process.env.GTHF_OVH_CREDENTIALS_FILE ?? process.env.GTHDF_OVH_CREDENTIALS_FILE;
+const destinationBucket = process.env.GTHF_OVH_BUCKET ?? process.env.GTHDF_OVH_BUCKET ?? 'gthdf-staging-media';
+const concurrency = Number.parseInt(process.env.GTHF_MEDIA_COPY_CONCURRENCY ?? process.env.GTHDF_MEDIA_COPY_CONCURRENCY ?? '4', 10);
 
 if (!credentialsFile) {
-  throw new Error('GTHDF_OVH_CREDENTIALS_FILE must point to a private environment file.');
+  throw new Error('GTHF_OVH_CREDENTIALS_FILE must point to a private environment file.');
 }
 if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 16) {
-  throw new Error('GTHDF_MEDIA_COPY_CONCURRENCY must be an integer between 1 and 16.');
+  throw new Error('GTHF_MEDIA_COPY_CONCURRENCY must be an integer between 1 and 16.');
 }
 
 function environmentMap(value) {

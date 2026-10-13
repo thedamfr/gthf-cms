@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: gthdf-cms-${{ github.ref }}
+  group: gthf-cms-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: thedamfr/gthdf-frontend
+          repository: thedamfr/gthf-frontend
           # Shared publisher reviewed and merged in frontend PR #36.
           ref: 636d7b6a6226d225141df69d57d45c6bc344f7c7
           path: deployer
@@ -72,8 +72,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: gthdf-cms-release-${{ github.sha }}
-          path: ${{ runner.temp }}/gthdf-release/
+          name: gthf-cms-release-${{ github.sha }}
+          path: ${{ runner.temp }}/gthf-release/
           if-no-files-found: warn
           retention-days: 30
 

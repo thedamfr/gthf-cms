@@ -28,7 +28,7 @@ test('parseMigrationArguments keeps remote production access opt-in', () => {
       apply: true,
       confirmRemote: true,
       help: false,
-      mappingPath: '/gthdf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv',
+      mappingPath: '/gthf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv',
       remote: true,
       reportPath: '/workspace/.tmp/city-migration-report.json',
       resolutionsPath: undefined,
@@ -325,7 +325,7 @@ test('parseMigrationArguments keeps dry-run safe by default and requires --apply
   ], '/workspace/gthdf-cms');
 
   assert.equal(defaults.apply, false);
-  assert.match(defaults.mappingPath, /gthdf-frontend.*villes\.csv$/);
+  assert.match(defaults.mappingPath, /gthf-frontend.*villes\.csv$/);
   assert.deepEqual(applied, {
     apply: true,
     confirmRemote: false,

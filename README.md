@@ -1,5 +1,37 @@
 # GTHF CMS
 
+## Summary
+
+Le CMS Strapi de GTHF porte les schémas, l’administration et les médias du site.
+Le dépôt et le package se nomment `gthf-cms` ; le déployeur commun est dans
+`gthf-frontend`. Le renommage conserve les données, buckets et droits existants.
+Les commandes de développement et de livraison sont détaillées dans les
+[annexes](#annexes), et les validations du renommage dans le
+[guide dédié](docs/renommage-gthf.md).
+
+## Synthèse
+
+Le CMS et le frontend gardent des cycles de livraison séparés et partagent le
+déployeur frontend. La production utilise le namespace `gthf-staging` ; le
+staging isolé utilise `gthf-qualification`. Les noms historiques des bases,
+buckets, volumes Docker et rôles persistés restent stables afin de conserver
+les données et permissions. L’application Clever historique conserve également
+son nom.
+
+`GTHF_REVISION` identifie les nouvelles images et l’ancienne variable
+`GTHDF_REVISION` reste comprise. Les scripts de migration acceptent les nouvelles
+variables `GTHF_*` et leurs anciens alias. Aucune migration métier n’est lancée
+par le renommage.
+
+La validation comprend `npm test`, `npm run build` et les Golden Journeys réels
+avec `npm run test:e2e -- staging`, puis `npm run test:e2e -- production`. Ces
+derniers nécessitent le checkout voisin `gthf-frontend` à la révision du déployeur
+retenue et les accès autorisés de Penthouse. Ils réalisent le CRUD et les uploads
+en staging seulement ; la production est vérifiée en lecture seule. Leur
+résultat est distinct de celui des tests unitaires et doit accompagner chaque PR.
+
+## Annexes
+
 CMS Strapi du Grand Tour des Hauts-de-France. Ce dépôt porte les schémas
 éditoriaux, l’administration, les migrations et les médias consommés par
 l’application publique.
@@ -8,16 +40,16 @@ l’application publique.
 
 Le produit GTHF est réparti entre :
 
-- ce dépôt `gthdf-cms`, source du schéma exécutable Strapi ;
-- [`gthdf-frontend`](https://github.com/thedamfr/gthdf-frontend), application
+- ce dépôt `gthf-cms`, source du schéma exécutable Strapi ;
+- [`gthf-frontend`](https://github.com/thedamfr/gthf-frontend), application
   Next.js qui consomme son contrat de données.
 
 Les PRD transverses ont une source canonique unique dans
-[`gthdf-frontend/documentation/`](https://github.com/thedamfr/gthdf-frontend/tree/main/documentation).
+[`gthf-frontend/documentation/`](https://github.com/thedamfr/gthf-frontend/tree/main/documentation).
 Chaque document précise les dépôts d’implémentation concernés, leur ordre de
 déploiement et les contraintes de compatibilité. Dans un checkout local où les
 deux dépôts sont voisins, ces fichiers se trouvent sous
-`../gthdf-frontend/documentation/`.
+`../gthf-frontend/documentation/`.
 
 Ne pas copier les PRD dans ce dépôt : les lier depuis le README, une issue ou
 une pull request. Cette centralisation simplifie la revue d’architecture sans
@@ -28,10 +60,10 @@ la cible de production publique.
 
 Documents de référence :
 
-- [PRD 01 — Référentiel des villes et pages hubs](https://github.com/thedamfr/gthdf-frontend/blob/main/documentation/prd_01_referentiel_villes_pages_hubs.md), livré ;
-- [PRD 02 — Retrouver son chapitre sur mobile](https://github.com/thedamfr/gthdf-frontend/blob/main/documentation/prd_02_retrouver_chapitre_mobile.md), livré et validé en production ;
-- [PRD 03 — GPX Builder v2 ville à ville](https://github.com/thedamfr/gthdf-frontend/blob/main/documentation/prd_03_gpx_builder_ville_a_ville.md), implémenté localement, qualification éditoriale en attente ;
-- [PRD 04 — Catalogue d’itinéraires ville à ville](https://github.com/thedamfr/gthdf-frontend/blob/main/documentation/prd_04_catalogue_itineraires_ville_a_ville.md), livré ; optimisation SEO des fiches en cours de déploiement.
+- [PRD 01 — Référentiel des villes et pages hubs](https://github.com/thedamfr/gthf-frontend/blob/main/documentation/prd_01_referentiel_villes_pages_hubs.md), livré ;
+- [PRD 02 — Retrouver son chapitre sur mobile](https://github.com/thedamfr/gthf-frontend/blob/main/documentation/prd_02_retrouver_chapitre_mobile.md), livré et validé en production ;
+- [PRD 03 — GPX Builder v2 ville à ville](https://github.com/thedamfr/gthf-frontend/blob/main/documentation/prd_03_gpx_builder_ville_a_ville.md), implémenté localement, qualification éditoriale en attente ;
+- [PRD 04 — Catalogue d’itinéraires ville à ville](https://github.com/thedamfr/gthf-frontend/blob/main/documentation/prd_04_catalogue_itineraires_ville_a_ville.md), livré ; optimisation SEO des fiches en cours de déploiement.
 - le lot CMS DataMaster du PRD 05 est documenté dans
   [`docs/prd05-datamaster-rbac.md`](docs/prd05-datamaster-rbac.md).
 
@@ -96,21 +128,21 @@ npm run develop
 ## Livraison continue OVH
 
 Le transport local est coordonné par les PR
-[frontend #36](https://github.com/thedamfr/gthdf-frontend/pull/36) et
-[CMS #26](https://github.com/thedamfr/gthdf-cms/pull/26), fusionnées dans cet ordre.
+[frontend #36](https://github.com/thedamfr/gthf-frontend/pull/36) et
+[CMS #26](https://github.com/thedamfr/gthf-cms/pull/26), fusionnées dans cet ordre.
 Les premières images GHCR, issues des anciennes PR #33/#23, ont déjà été
 vérifiées dans le staging isolé puis en production.
-Le [runbook commun](https://github.com/thedamfr/gthdf-frontend/blob/main/documentation/deploiement_continu.md)
+Le [runbook commun](https://github.com/thedamfr/gthf-frontend/blob/main/documentation/deploiement_continu.md)
 conserve les digests, les recettes et l’incident suivi d’une reprise. Le raccordement automatique utilise un réconciliateur local sur Penthouse,
 sans connexion des runners au serveur.
 
-La production conserve `gthdf-staging` et le bucket `gthdf-staging-media` à Paris.
-Le staging complet utilise `gthdf-qualification` et `gthf-staging-media-bis` à
+La production utilise `gthf-staging` et conserve le bucket `gthdf-staging-media` à Paris.
+Le staging complet utilise `gthf-qualification` et `gthf-staging-media-bis` à
 Gravelines. L’utilisateur S3 GTHF autorisé est installé dans les deux environnements ;
 les secrets Strapi et les comptes de recette sont distincts. Le
 [CMS staging](https://staging-cms.gthf.fr/) exige une authentification.
 
-L'image reçoit `GTHDF_REVISION` au build, sans secret. `GET /api/release` renvoie
+L'image reçoit `GTHF_REVISION` au build, sans secret ; `GTHDF_REVISION` reste accepté pour les anciens déployeurs. `GET /api/release` renvoie
 cette révision avec `Cache-Control: no-store` après une requête PostgreSQL ; une
 base indisponible donne 503. `DATABASE_FORCE_MIGRATION` vaut `false` par défaut :
 Strapi conserve les tables et colonnes persistantes lors d'un retour arrière.
@@ -149,12 +181,13 @@ CRUD, preview, publication, upload et nettoyage ont réussi.
 
 ## Image de production autohébergée
 
-Depuis le 11 septembre 2026, `deployment/gthdf-cms` sert `https://cms.gthf.fr`
-sur Penthouse, namespace `gthdf-staging`, avec le commit
+Les preuves historiques du 11 septembre 2026 concernent `deployment/gthdf-cms`,
+namespace `gthdf-staging`, servant `https://cms.gthf.fr` sur Penthouse avec le commit
 `bd7c11222ed03325fe2161d349de0b1286255e18` et le digest GHCR
 `sha256:35dd2cdc3bccd4c91db281b79eab4a4efbcda5aa28b404e80c8be1e4ab8972d8`.
-Le même digest est qualifié dans `gthdf-qualification`. PostgreSQL et les
-médias de production restent conservés.
+Le même digest avait été qualifié dans `gthdf-qualification`. Ces preuves
+historiques ne valent pas validation du renommage courant ; voir le
+[guide de renommage](docs/renommage-gthf.md). PostgreSQL et les médias sont conservés.
 
 Les [critères de staging complet](docs/livraison-continue.md#staging-complet-du-produit)
 sont recettés. Le réconciliateur local est actif et a traité automatiquement
@@ -165,7 +198,7 @@ la publication du candidat ; le résultat de production est enregistré sur le s
 
 Le [plan de livraison du CMS](docs/livraison-continue.md) décrit la sélection,
 le verrou commun, la compatibilité des schémas et le retour arrière. Le serveur
-lit le candidat public dans `gthdf-release` et le cluster récupère son digest GHCR.
+lit le candidat public dans `gthf-release` et le cluster récupère son digest GHCR.
 Ansible et Kustomize restent
 les outils d’activation ; les commandes Docker locales suivantes sont un secours.
 
@@ -180,8 +213,8 @@ uniquement `CLIENT_URL` et les origines HTTP(S) explicites de
 `PREVIEW_ALLOWED_ORIGINS`.
 
 ```bash
-sudo -n docker build -t gthdf-cms:staging .
-sudo -n docker run --rm --network none gthdf-cms:staging node -e \
+sudo -n docker build -t gthf-cms:staging .
+sudo -n docker run --rm --network none gthf-cms:staging node -e \
   "console.log(process.getuid(), process.getgid())"
 ```
 
@@ -189,8 +222,8 @@ Ces commandes utilisent le builder local autorisé sur OVH ; un poste de
 développement peut disposer d'un autre mode d'accès Docker. Le build ne
 remplace pas l'import dans le containerd MicroK8s ni l'activation du workload.
 La recette MicroK8s et la stratégie de migration sont documentées dans le
-[runbook infra frontend](https://github.com/thedamfr/gthdf-frontend/blob/main/infrastructure/README.md)
-et l'[ADR d'hébergement](https://github.com/thedamfr/gthdf-frontend/blob/main/documentation/adr_hebergement_microk8s_partage.md).
+[runbook infra frontend](https://github.com/thedamfr/gthf-frontend/blob/main/infrastructure/README.md)
+et l'[ADR d'hébergement](https://github.com/thedamfr/gthf-frontend/blob/main/documentation/adr_hebergement_microk8s_partage.md).
 
 ### Portée des commandes distantes et des migrations
 
@@ -226,7 +259,7 @@ privé explicitement fourni et ne supprime jamais la source. Les objets déjà
 présents avec la même taille sont ignorés.
 
 ```bash
-GTHDF_OVH_CREDENTIALS_FILE=/chemin/prive/ovh.env \
+GTHF_OVH_CREDENTIALS_FILE=/chemin/prive/ovh.env \
   npm run migrate:media:ovh-staging
 ```
 
@@ -242,7 +275,7 @@ d’article, de chapitre et de ville.
 ## Migration PRD 01 des villes
 
 Le script de reprise lit par défaut l’export contrôlé
-`../gthdf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv`.
+`../gthf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv`.
 Il utilise les noms legacy des chapitres pour proposer uniquement les villes
 nécessaires ; il n’importe jamais tout le référentiel de 223 villes.
 
@@ -302,7 +335,7 @@ schéma au chargement de la nouvelle version ; le script ci-dessous reprend
 ensuite les données, une seule fois et depuis un checkout local où les deux
 dépôts sont voisins.
 
-Après déploiement du CMS, mettre `gthdf-frontend` à jour pour disposer du CSV
+Après déploiement du CMS, mettre `gthf-frontend` à jour pour disposer du CSV
 canonique et renseigner dans le `.env` local du CMS les variables
 `POSTGRESQL_ADDON_HOST_REMOTE`, `POSTGRESQL_ADDON_PORT_REMOTE`,
 `POSTGRESQL_ADDON_DB_REMOTE`, `POSTGRESQL_ADDON_USER_REMOTE` et
@@ -644,7 +677,7 @@ yarn build
 Les images sont d'abord construites et importées dans MicroK8s, puis activées
 avec Ansible et Kustomize depuis le dépôt frontend. Suivre la section
 [Image de production autohébergée](#image-de-production-autohébergée) et le
-[runbook infra](https://github.com/thedamfr/gthdf-frontend/blob/main/infrastructure/README.md).
+[runbook infra](https://github.com/thedamfr/gthf-frontend/blob/main/infrastructure/README.md).
 La commande npm `deploy` existe encore dans `package.json`, mais appelle
 `strapi deploy` : elle ne déploie pas ce cluster OVH. Le hook
 `.clevercloud/post_build.sh` est conservé pour l'ancien hébergement ; il ne

@@ -154,11 +154,11 @@ function parseAnchorPreparationArguments(argv, cwd = process.cwd()) {
     confirmRemote: false,
     citiesPath: resolve(
       cwd,
-      '../gthdf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv'
+      '../gthf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/villes.csv'
     ),
     chaptersPath: resolve(
       cwd,
-      '../gthdf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/chapitres.csv'
+      '../gthf-frontend/documentation/data/gthf_villes_et_produits_seo/csv/chapitres.csv'
     ),
     help: false,
     remote: false,

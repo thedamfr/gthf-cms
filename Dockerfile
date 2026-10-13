@@ -19,8 +19,9 @@ RUN npm run build \
 FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
 ARG GTHDF_REVISION=development
-ENV GTHDF_REVISION=${GTHDF_REVISION}
-LABEL org.opencontainers.image.revision=${GTHDF_REVISION}
+ARG GTHF_REVISION=${GTHDF_REVISION}
+ENV GTHF_REVISION=${GTHF_REVISION}
+LABEL org.opencontainers.image.revision=${GTHF_REVISION}
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=1337 \

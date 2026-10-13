@@ -27,7 +27,9 @@ export function stagingMediaUrl(value) {
 }
 
 export function requireStagingTarget(env) {
-  if (env.GTHDF_NAMESPACE !== 'gthdf-qualification' || env.DATABASE_HOST !== 'gthdf-postgres'
+  const namespace = env.GTHF_NAMESPACE ?? env.GTHDF_NAMESPACE;
+  if (!['gthf-qualification', 'gthdf-qualification'].includes(namespace)
+    || !['gthf-postgres', 'gthdf-postgres'].includes(env.DATABASE_HOST)
     || env.DATABASE_CLIENT !== 'postgres'
     || env.AWS_BUCKET !== 'gthf-staging-media-bis' || env.AWS_ENDPOINT !== 'https://s3.gra.io.cloud.ovh.net'
     || env.DATABASE_URL || Object.entries(env).some(([key, value]) => /^(POSTGRESQL|CELLAR)_ADDON_/.test(key) && value)) {
