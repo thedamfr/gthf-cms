@@ -8,7 +8,7 @@ import { createFaultGate } from '../src/infrastructure/recovery/fault-gate';
 const campaign = '11111111-1111-4111-8111-111111111111';
 const databaseName = `gthf_recovery_${campaign.replace(/-/g, '')}`;
 const campaignMarker = { campaignId: campaign, databaseName, namespace: 'gthf-recovery', isolated: true };
-const campaignEnv = (directory: string) => ({ GTHF_RECOVERY_CAMPAIGN: campaign, GTHF_RECOVERY_FAULT_DIR: directory, GTHF_RECOVERY_ISOLATED: 'true', GTHF_RECOVERY_NAMESPACE: 'gthf-recovery', DATABASE_CLIENT: 'postgres', DATABASE_NAME: databaseName });
+const campaignEnv = (directory: string) => ({ GTHF_RECOVERY_CAMPAIGN: campaign, GTHF_RECOVERY_FAULT_DIR: directory, GTHF_RECOVERY_ISOLATED: 'true', GTHF_RECOVERY_NAMESPACE: 'gthf-recovery', DATABASE_CLIENT: 'postgres', DATABASE_HOST: 'postgres', DATABASE_PORT: '5432', DATABASE_SCHEMA: 'public', DATABASE_NAME: databaseName });
 const key = '22222222-2222-4222-8222-222222222222';
 test('fault gates are inert without a campaign and refuse a production database', async () => {
   await createFaultGate({})('after-journal', { key, attempt: key });
@@ -48,7 +48,8 @@ test('fault gates refuse missing, mismatched markers, namespace and connection o
     for (const override of [
       { GTHF_RECOVERY_NAMESPACE: 'gthf-staging' }, { DATABASE_NAME: 'gthf_recovery_other' },
       { DATABASE_URL: 'postgres://example.invalid/other' }, { POSTGRESQL_ADDON_URI: 'postgres://example.invalid/other' },
-      { POSTGRESQL_ADDON_DB: 'other' }, { POSTGRESQL_ADDON_HOST: 'example.invalid' },
+      { DATABASE_HOST: 'database.example.invalid' }, { DATABASE_HOST: '127.0.0.1' }, { DATABASE_PORT: '5433' }, { DATABASE_SCHEMA: 'private' },
+      { POSTGRESQL_ADDON_PORT: '5433' }, { POSTGRESQL_ADDON_DB: 'other' }, { POSTGRESQL_ADDON_HOST: 'example.invalid' },
     ]) assert.throws(() => createFaultGate({ ...campaignEnv(directory), ...override }), /synthetic database/);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

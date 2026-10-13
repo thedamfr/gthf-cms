@@ -13,8 +13,11 @@ export function createFaultGate(env: NodeJS.ProcessEnv = process.env) {
   if (!directory || !path.isAbsolute(directory) || !UUID.test(campaignId || '')
     || env.DATABASE_NAME !== `gthf_recovery_${campaignId.replace(/-/g, '')}`
     || env.DATABASE_CLIENT !== 'postgres'
+    || env.DATABASE_HOST !== 'postgres'
+    || (env.DATABASE_PORT ?? '5432') !== '5432'
+    || (env.DATABASE_SCHEMA ?? 'public') !== 'public'
     || env.GTHF_RECOVERY_NAMESPACE !== 'gthf-recovery'
-    || env.DATABASE_URL || env.POSTGRESQL_ADDON_URI || env.POSTGRESQL_ADDON_HOST || env.POSTGRESQL_ADDON_DB
+    || env.DATABASE_URL || env.POSTGRESQL_ADDON_URI || env.POSTGRESQL_ADDON_HOST || env.POSTGRESQL_ADDON_DB || env.POSTGRESQL_ADDON_PORT
     || env.GTHF_RECOVERY_ISOLATED !== 'true') {
     throw new Error('Recovery fault gates require the isolated campaign and synthetic database');
   }

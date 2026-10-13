@@ -6,7 +6,7 @@ import { RecoveryError } from '../src/infrastructure/recovery/types';
 const key = '11111111-1111-4111-8111-111111111111';
 const file = { id: 42, hash: 'immutable', ext: '.png', provider: 'aws-s3', updatedAt: '2026-10-13T22:00:00Z', createdBy: 8, folder: 3 };
 const plan = { key: batchChildKey(key, file.id), version: 'frozen-original-version', file };
-const batch: any = { key, actor: 'admin:8', admin_user_id: 8, attempt: key, lease_owner: key, state: 'pending', manifest: { files: [plan], folders: [], rootFolderIds: [] } };
+const batch: any = { key, actor: 'admin:8', admin_user_id: 8, attempt: key, lease_owner: key, state: 'pending', input: { fileIds: [42], folderIds: [] }, manifest: { files: [plan], folders: [], rootFolderIds: [] } };
 function setup({ acquired = true, state = 'prepared', failure = undefined as string | undefined, denied = false } = {}) {
   const prepared: any[] = []; const committed: any[] = []; const inputs: any[] = []; const interrupted: any[] = [];
   const operation: any = { state, failure, receipt: file };
@@ -81,3 +81,34 @@ for (const moved of [[], [{ id: 7, name: 'selected', path: '/moved', pathId: 7, 
     assert.equal(fileReads, 0, 'The inconsistent folder scope must fail before planning file deletions');
   });
 }
+
+
+test('newly committed batch children emit sanitized media events but their replays do not', async () => {
+  const emitted: any[] = []; const current = setup();
+  (current.engine as any).strapi.getModel = () => ({ attributes: { id: { type: 'integer' }, hash: { type: 'string' }, privateValue: { type: 'string', private: true } } });
+  (current.engine as any).strapi.eventHub = { emit: (...args: any[]) => emitted.push(args) };
+  current.journal.commit = async () => ({ id: 42, hash: 'immutable', privateValue: 'never expose' });
+  const previousStrapi = (globalThis as any).strapi;
+  (globalThis as any).strapi = { config: { get: () => [] } };
+  try { await (current.engine as any).child(batch, plan); }
+  finally { (globalThis as any).strapi = previousStrapi; }
+  assert.deepEqual(emitted, [['media.delete', { media: { id: 42, hash: 'immutable' } }]]);
+  current.journal.begin = async () => ({ acquired: false, operation: { state: 'committed', receipt: file } });
+  await (current.engine as any).child(batch, plan); assert.equal(emitted.length, 1);
+});
+
+test('a committed batch emits its folder event and original bulk metric once after metadata commit', async () => {
+  const events: any[] = []; const metric: any[] = []; const order: string[] = []; const current = setup();
+  const instance: any = current.engine;
+  instance.strapi.eventHub = { emit: (...args: any[]) => { order.push('folder-event'); events.push(args); } };
+  instance.strapi.plugin = () => ({ service: () => ({ trackUsage: async (...args: any[]) => metric.push(args) }) });
+  instance.assertLease = async () => {}; instance.child = async () => file;
+  instance.finish = async () => { order.push('committed'); return { files: [file], folders: [{ id: 3 }] }; };
+  const input = { ...batch, manifest: { files: [plan, { ...plan, file: { ...file, id: 43 } }], folders: [{ id: 3 }, { id: 4 }], rootFolderIds: [3] } };
+  const result = await instance.process(input);
+  assert.deepEqual(order, ['committed', 'folder-event']); assert.deepEqual(events, [['media-folder.delete', { folders: result.folders }]]);
+  assert.deepEqual(metric, [['didBulkDeleteMediaLibraryElements', { eventProperties: { rootFolderNumber: 1, rootAssetNumber: 1, totalFolderNumber: 2, totalAssetNumber: 2 } }]]);
+  instance.strapi.eventHub.emit = () => { throw new Error('informational event unavailable'); };
+  instance.strapi.plugin = () => ({ service: () => ({ trackUsage: async () => { throw new Error('telemetry unavailable'); } }) });
+  assert.deepEqual(await instance.process(input), result, 'post-commit effects cannot turn the durable result into failure');
+});

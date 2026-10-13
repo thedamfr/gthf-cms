@@ -6,6 +6,7 @@ import { FILE_UID, FOLDER_UID, MEDIA_BATCH_TABLE, MEDIA_CLEANUP_TABLE, MEDIA_OPE
 import { mediaVersion } from '../../src/infrastructure/recovery/prepare';
 import { sha256 } from '../../src/infrastructure/recovery/storage';
 import { checkBatches } from './check-batches';
+import { checkRelease } from './check-release';
 
 let stage = 'isolated guards';
 function checkpoint(value: string) { stage = value; process.stdout.write(`Journal qualification: ${value}\n`); }
@@ -220,6 +221,8 @@ async function main() {
     checks.push('abandoned immutable object keys survive a completed sweep and are claimed again');
     checkpoint('durable batch identities, partial receipts and folder finalization');
     await checkBatches(application, journal, actor, keys, hashes, folderIds, checks);
+    checkpoint('real PostgreSQL readiness pool saturation and query cancellation');
+    await checkRelease(application, checks);
     process.stdout.write(JSON.stringify({ status: 'passed', campaign, revision: process.env.GTHF_REVISION || 'development', checkedAt: new Date().toISOString(), checks }, null, 2) + '\n');
   } catch (error: any) { error.recoveryStage = stage; throw error; } finally {
     checkpoint('remove only this test invocation and shut down');

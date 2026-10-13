@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { authorizeMediaOperation } from '../src/infrastructure/recovery/authorization';
+import { authorizeMediaOperation, authorizeAdminMediaReceipt } from '../src/infrastructure/recovery/authorization';
 import { MediaRecovery, actorFor } from '../src/infrastructure/recovery/engine';
 import { RecoveryError } from '../src/infrastructure/recovery/types';
 
@@ -82,4 +82,26 @@ test('autonomous recovery makes revoked work terminal but preserves uncertainty 
     if (terminal) assert.deepEqual(interrupted?.slice(1), [true, 'AUTHORIZATION_REVOKED']);
     else assert.equal(interrupted, undefined);
   }
+});
+
+test('a committed admin-token receipt requires both the current owner ceiling and the request ability', async () => {
+  const { state, strapi } = adminFixture(); const committed = { ...operation('admin-token:9', 'delete'), state: 'committed', receipt: { id: 42 } };
+  await authorizeAdminMediaReceipt(strapi, { allowed: true }, committed);
+  state.userAllowed = false;
+  await assert.rejects(authorizeAdminMediaReceipt(strapi, { allowed: true }, committed), denied);
+  state.userAllowed = true;
+  await assert.rejects(authorizeAdminMediaReceipt(strapi, { allowed: false }, committed), denied);
+  assert.equal(committed.state, 'committed'); assert.deepEqual(committed.receipt, { id: 42 });
+});
+test('a committed media replay rechecks the admin-token owner before returning its stable receipt', async () => {
+  const { state, strapi } = adminFixture();
+  const key = '11111111-1111-4111-8111-111111111111';
+  const file = { id: 42, hash: 'old', updatedAt: '2026-10-13T00:00:00Z' };
+  const ctx = { path: '/upload/files/42', state: { auth: { strategy: { name: 'admin-token' }, credentials: { id: 9 } }, userAbility: { allowed: true }, user: { id: 4 } }, get: () => key, set() {} };
+  const engine = new MediaRecovery({ ...strapi, db: { connection: {} }, requestContext: { get: () => ctx } }, {} as any);
+  const committed = { ...operation('admin-token:9', 'delete'), state: 'committed', receipt: file };
+  engine.journal.begin = async () => ({ acquired: false, operation: committed });
+  state.userAllowed = false; await assert.rejects(engine.remove({}, file), denied);
+  state.userAllowed = true; assert.deepEqual(await engine.remove({}, file), file);
+  assert.equal(committed.state, 'committed'); assert.equal(committed.receipt, file);
 });

@@ -55,3 +55,9 @@ export async function authorizeMediaOperation(strapi: any, operation: Operation)
   const ability = await strapi.contentAPI.permissions.engine.generateAbility(permissions);
   if (!ability.can(scope)) revoked();
 }
+
+/** Receipt access includes the durable principal ceiling even when the request uses an admin token. */
+export async function authorizeAdminMediaReceipt(strapi: any, ability: any, operation: Operation) {
+  await authorizeMediaOperation(strapi, operation);
+  return adminMediaPermissions(strapi, ability, operation);
+}

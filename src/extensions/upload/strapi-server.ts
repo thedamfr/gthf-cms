@@ -1,7 +1,7 @@
 import { MediaRecovery, actorFor, operationKey } from '../../infrastructure/recovery/engine';
 import { createRecoveryStorage } from '../../infrastructure/recovery/storage';
 import { createFaultGate } from '../../infrastructure/recovery/fault-gate';
-import { adminMediaPermissions } from '../../infrastructure/recovery/authorization';
+import { authorizeAdminMediaReceipt, authorizeMediaOperation } from '../../infrastructure/recovery/authorization';
 import { batchPermissionOperation } from '../../infrastructure/recovery/batches';
 import { FILE_UID, Operation, RecoveryError } from '../../infrastructure/recovery/types';
 
@@ -19,7 +19,7 @@ export async function stopRecoveryForJournalQualification() {
   await recovery.stop();
 }
 async function permissions(ctx: any, operation: Operation) {
-  return adminMediaPermissions(application, ctx.state.userAbility, operation);
+  return authorizeAdminMediaReceipt(application, ctx.state.userAbility, operation);
 }
 export default (plugin: any) => {
   const version = require('@strapi/upload/package.json').version;
@@ -138,6 +138,7 @@ export default (plugin: any) => {
               const previous = await recovery.journal.getOwned(key, actorFor(ctx).id);
               if (previous.kind !== 'delete' || previous.target_id !== Number(ctx.params.id)) throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key belongs to a different request');
               if (previous.state === 'committed') {
+                await authorizeMediaOperation(application, previous);
                 ctx.set('Idempotency-Key', key);
                 ctx.body = await application.contentAPI.sanitize.output(previous.receipt, application.getModel(FILE_UID), { auth: ctx.state.auth });
                 return;

@@ -194,7 +194,10 @@ ne redécouvre puis supprime automatiquement un périmètre plus large.
 `npm run test:recovery:journal` couvre aussi collisions d’identités, bail parent,
 crash simulé après premier enfant, reprise unique, refus des droits actuels,
 contenu concurrent préservé et rollback du DELETE dossier avec le reçu. Ce sont de
-vraies transactions PostgreSQL ; les suppressions S3 et les vrais SIGKILL restent
+vraies transactions PostgreSQL. Deux contrôles supplémentaires saturent le petit pool
+du Job, puis observent et annulent un vrai `pg_sleep` : ils journalisent le délai de
+503, la fin réelle de la requête et le retour à 200, sans modifier la configuration
+PostgreSQL. Les suppressions S3 et les vrais SIGKILL restent
 qualifiés séparément dans la campagne VM.
 
 ### Protocole des pauses de qualification
@@ -215,7 +218,9 @@ Le répertoire contient obligatoirement `campaign.json` avant le démarrage :
 ```
 
 Ces valeurs doivent correspondre exactement aux variables du processus. Les
-surcharges de connexion `DATABASE_URL` et `POSTGRESQL_ADDON_URI/HOST/DB` sont refusées.
+surcharges de connexion `DATABASE_URL` et `POSTGRESQL_ADDON_URI/HOST/DB/PORT` sont refusées.
+Le banc exige aussi `DATABASE_HOST=postgres`, port `5432` et schéma `public` ;
+un autre endpoint ou schéma ne peut pas activer les pauses, même avec le bon nom de base.
 Le contrôleur écrit `gate.json` avec `campaignId`, `key`, `point` et facultativement
 `objectIndex`. Les points sont `after-journal`, `after-object`, `before-commit`,
 `after-commit`, `during-cleanup`, `after-batch-child`. Ce dernier porte la clé et
@@ -227,3 +232,13 @@ Pour un témoin sans panne, `release.json` reprend campagne, clé, point, `attem
 et `objectIndex` exacts de l’observation. Il est consommé et synchronisé après usage
 pour ne pas libérer une deuxième pause par erreur.
 Aucun header HTTP ne permet d’activer ces pauses.
+
+
+### Événements informatifs après commit
+
+Les créations, remplacements et suppressions acquittés émettent les événements
+Strapi habituels ; un lot conserve aussi `media-folder.delete` et la métrique de
+suppression multiple. Seul le processus qui vient de committer les émet : le
+rejeu d’un reçu ne relance pas ces effets. Ils restent informatifs et best-effort,
+comme les hooks du fournisseur : une coupure entre commit et émission peut perdre
+un événement. Le reçu SQL et la reprise métier ne dépendent pas de leur livraison.

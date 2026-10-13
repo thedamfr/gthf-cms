@@ -127,7 +127,7 @@ test('shutdown waits for an HTTP media operation already in flight', async () =>
     const started = new Promise<void>((resolve) => { began = resolve; });
     const ctx = { path: '/upload', state: { userAbility: {}, user: { id: 4 } }, get: () => key, set() {} };
     const engine = new MediaRecovery({ requestContext: { get: () => ctx }, db: { connection: {} } }, { close: () => { closed = true; } } as any);
-    engine.journal.begin = async () => { began!(); await pause; return { acquired: false, operation: { state: 'committed', receipt: [{ id: 7 }] } } as any; };
+    engine.journal.begin = async () => { began!(); await pause; return { acquired: false, operation: { actor: 'internal', state: 'committed', receipt: [{ id: 7 }] } } as any; };
     const request = engine.upload({}, { data: {}, files: [{ filepath }] });
     await started; const stopping = engine.stop();
     await Promise.resolve(); assert.equal(closed, false);
@@ -144,4 +144,14 @@ test('delete permission snapshots retain relation IDs without populated admin se
   assert.deepEqual(subject, { id: 12, name: 'fixture', mime: 'text/plain', createdBy: 4, updatedBy: 5, folder: 8 });
   assert.equal(JSON.stringify(subject).includes('secret-'), false);
   assert.equal(mediaPermissionSubject({ createdBy: { password: 'secret-without-id' } }).createdBy, null);
+});
+
+
+test('a streamed URL import keeps its internal operation key without mutating already-sent headers', () => {
+  let headerWrites = 0;
+  const ctx = { path: '/upload/actions/upload-from-urls', headerSent: true, state: { userAbility: {}, user: { id: 4 } }, get: () => '', set() { headerWrites++; throw new Error('ERR_HTTP_HEADERS_SENT'); } };
+  const engine = new MediaRecovery({ requestContext: { get: () => ctx }, db: { connection: {} } }, {} as any);
+  const first = (engine as any).context(); const second = (engine as any).context();
+  assert.match(first.key, /^[a-f0-9-]{36}$/); assert.notEqual(first.key, second.key);
+  assert.equal(first.actor.id, 'admin:4'); assert.equal(headerWrites, 0);
 });

@@ -1,6 +1,6 @@
-import { sanitize } from '@strapi/utils';
 import { randomUUID } from 'node:crypto';
 import { MediaJournal } from './journal';
+import { emitCommittedMediaEvent } from './events';
 import { authorizeMediaOperation } from './authorization';
 import { MediaBatches, batchPermissionOperation } from './batches';
 import { createFaultGate, FaultPoint } from './fault-gate';
@@ -74,7 +74,7 @@ export class MediaRecovery {
       const hex = sha256(`${key}:delete:${targetId}`);
       key = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
     }
-    ctx?.set('Idempotency-Key', key);
+    if (ctx && !ctx.headerSent) ctx.set('Idempotency-Key', key);
     return { ctx, actor, key };
   }
   private async checkpoint(point: FaultPoint, operation: Operation, objectIndex?: number) {
@@ -99,6 +99,7 @@ export class MediaRecovery {
     const { operation, acquired } = await this.journal.begin({ key, actor, kind, requestHash, targetId: oldFile?.id, targetVersion: oldFile ? mediaVersion(oldFile) : undefined });
     if (!acquired) {
       if (operation.state === 'committed') {
+        await authorizeMediaOperation(this.strapi, operation);
         if (ctx) ctx.state.gthfMediaCommittedReplay = true;
         return operation.receipt;
       }
@@ -123,13 +124,7 @@ export class MediaRecovery {
       await this.checkpoint('before-commit', operation);
       const result = await this.journal.commit(operation);
       await this.checkpoint('after-commit', operation);
-      // Events are informational; they must not turn a committed durable receipt into a failure.
-      try {
-        for (const media of Array.isArray(result) ? result : [result]) {
-          const output = await sanitize.sanitizers.defaultSanitizeOutput({ schema: this.strapi.getModel(FILE_UID), getModel: (uid) => this.strapi.getModel(uid) }, media);
-          this.strapi.eventHub.emit(`media.${kind === 'upload' ? 'create' : kind === 'replace' ? 'update' : 'delete'}`, { media: output });
-        }
-      } catch {}
+      await emitCommittedMediaEvent(this.strapi, kind, result);
       return result;
     } catch (error: any) {
       if (!operation.manifest && ['ValidationError', 'ApplicationError', 'PayloadTooLargeError'].includes(error.name)) {
@@ -205,8 +200,9 @@ export class MediaRecovery {
           }
           if (complete) {
             await this.checkpoint('before-commit', operation);
-            await this.journal.commit(operation);
+            const result = await this.journal.commit(operation);
             await this.checkpoint('after-commit', operation);
+            await emitCommittedMediaEvent(this.strapi, operation.kind, result);
           } else {
             await this.journal.interrupt(operation);
           }

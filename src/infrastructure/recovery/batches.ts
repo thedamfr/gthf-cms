@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { MediaJournal } from './journal';
+import { emitCommittedBatchEvents, emitCommittedMediaEvent } from './events';
 import { existingObjects, mediaPermissionSubject, mediaVersion, requestFingerprint, stableJSON } from './prepare';
 import { sha256, RecoveryStorage } from './storage';
 import { Actor, FILE_UID, FOLDER_UID, MEDIA_BATCH_TABLE, MEDIA_OPERATION_TABLE, Operation, RecoveryError, RECONCILE_MS } from './types';
@@ -136,7 +137,9 @@ export class MediaBatches {
       await this.journal.prepare(operation, { files: [{ values: {}, targetId: plan.file.id, previousHash: plan.file.hash,
         previousVersion: plan.version, permissionSubject: plan.file }], objects: [],
         obsolete: existingObjects(plan.file, this.storage, this.strapi.config.get('plugin::upload').provider) });
-      return await this.journal.commit(operation);
+      const result = await this.journal.commit(operation);
+      await emitCommittedMediaEvent(this.strapi, 'delete', result);
+      return result;
     } catch (error: any) {
       if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'AUTHORIZATION_REVOKED'].includes(error.code)) {
         try { await this.journal.interrupt(operation, true, error.code); } catch {}
@@ -182,7 +185,9 @@ export class MediaBatches {
         await this.assertLease(batch); files.push(await this.child(batch, plan));
         await this.gate('after-batch-child', { key: batch.key, attempt: batch.attempt, objectIndex: index });
       }
-      return await this.finish(batch, files);
+      const result = await this.finish(batch, files);
+      await emitCommittedBatchEvents(this.strapi, batch, result);
+      return result;
     } catch (error: any) {
       if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'FOLDER_CHANGED', 'AUTHORIZATION_REVOKED', 'IDEMPOTENCY_CONFLICT', 'OPERATION_FAILED'].includes(error.code)) {
         try { await this.fail(batch, error.code); } catch {}
