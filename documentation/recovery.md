@@ -27,7 +27,8 @@ interrompu : il n’est jamais annoncé réussi. Le client peut reprendre la mê
 intention. Un reçu ne peut être consulté que par son propriétaire autorisé.
 
 Le réconciliateur est prévu toutes les 15 secondes, avec bail de 90 secondes et
-contrôle de propriété avant validation. La cible de reprise après retour des
+contrôle de propriété avant validation. L’arrêt gracieux attend les mutations,
+le cycle actif et ses heartbeats avant de fermer S3 puis le pool PostgreSQL. La cible de reprise après retour des
 dépendances est de 300 secondes ; elle doit être mesurée par les Golden Journeys.
 Les pauses de faute sont inactives par défaut et refusent une base de production.
 L’arrêt brutal est effectué par le contrôleur externe de qualification.

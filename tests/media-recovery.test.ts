@@ -98,3 +98,33 @@ test('target versions detect same-timestamp metadata and folder changes without 
   assert.notEqual(mediaVersion(file), mediaVersion({ ...file, folderPath: '/2' }));
   assert.equal(mediaVersion(file), mediaVersion({ ...file, createdBy: { id: 4 }, folder: { id: 1 } }));
 });
+test('shutdown drains an active reconciliation before closing storage and refuses new cycles', async () => {
+  let finish: () => void; let claims = 0; let closed = false;
+  const pause = new Promise<void>((resolve) => { finish = resolve; });
+  const engine = new MediaRecovery({ db: { connection: {} }, log: { warn() {} } }, { close: () => { closed = true; } } as any);
+  engine.journal.claimExpired = async () => { claims++; await pause; return undefined; };
+  const cycle = engine.reconcile();
+  const stopping = engine.stop();
+  await Promise.resolve(); assert.equal(closed, false);
+  finish!(); await cycle; await stopping;
+  assert.equal(closed, true);
+  await engine.reconcile(); assert.equal(claims, 1);
+  await assert.rejects(engine.upload({}, { data: {}, files: [] }), (error: any) => error.code === 'CMS_STOPPING');
+});
+test('shutdown waits for an HTTP media operation already in flight', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-stop-upload-'));
+  try {
+    const filepath = path.join(directory, 'file'); await fs.writeFile(filepath, 'test');
+    let finish: () => void; let began: () => void; let closed = false;
+    const pause = new Promise<void>((resolve) => { finish = resolve; });
+    const started = new Promise<void>((resolve) => { began = resolve; });
+    const ctx = { path: '/upload', state: { userAbility: {}, user: { id: 4 } }, get: () => key, set() {} };
+    const engine = new MediaRecovery({ requestContext: { get: () => ctx }, db: { connection: {} } }, { close: () => { closed = true; } } as any);
+    engine.journal.begin = async () => { began!(); await pause; return { acquired: false, operation: { state: 'committed', receipt: [{ id: 7 }] } } as any; };
+    const request = engine.upload({}, { data: {}, files: [{ filepath }] });
+    await started; const stopping = engine.stop();
+    await Promise.resolve(); assert.equal(closed, false);
+    finish!(); assert.deepEqual(await request, [{ id: 7 }]); await stopping;
+    assert.equal(closed, true);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});

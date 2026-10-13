@@ -46,7 +46,7 @@ export default function RecoveryPage() {
     <h1>Reprise des médias</h1>
     <p>Retrouvez ici le résultat des envois de cet onglet après une interruption. Un envoi terminé ne doit pas être recommencé. Une nouvelle sélection dans la médiathèque crée un nouvel envoi.</p>
     {error && <p role="alert">{error}</p>}
-    {unavailable && <p role="status">Le CMS est temporairement indisponible. Les envois restent conservés dans cet onglet.</p>}
+    {unavailable && <p role="status">Certains résultats sont temporairement inaccessibles. Les envois restent conservés dans cet onglet.</p>}
     {!items.length && <p>Aucun envoi à vérifier dans cet onglet.</p>}
     <ul>{items.map((item) => <li key={item.key} style={{ margin: '1.5rem 0' }}>
       <strong>{item.files.map((file) => file.name).join(', ') || 'Suppression de média'}</strong>

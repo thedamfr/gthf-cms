@@ -26,6 +26,8 @@ export class MediaRecovery {
   private gate: ReturnType<typeof createFaultGate>;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private activeCycle?: Promise<void>;
+  private operations = new Set<Promise<any>>();
   private stopped = false;
   constructor(private readonly strapi: any, private readonly storage: RecoveryStorage) {
     this.journal = new MediaJournal(strapi);
@@ -37,7 +39,21 @@ export class MediaRecovery {
     this.timer.unref();
     void this.reconcile();
   }
-  async stop() { this.stopped = true; clearInterval(this.timer); this.storage.close(); }
+  async stop() {
+    this.stopped = true;
+    clearInterval(this.timer);
+    // Strapi closes PostgreSQL after plugin.destroy: finish our users of both
+    // dependencies first, including a cycle launched by the bootstrap timer.
+    await Promise.allSettled([...this.operations, ...(this.activeCycle ? [this.activeCycle] : [])]);
+    this.storage.close();
+  }
+  private track<T>(task: () => Promise<T>): Promise<T> {
+    if (this.stopped) return Promise.reject(new RecoveryError(503, 'CMS_STOPPING', 'The CMS is restarting; keep the operation key'));
+    const operation = task();
+    this.operations.add(operation);
+    void operation.then(() => this.operations.delete(operation), () => this.operations.delete(operation));
+    return operation;
+  }
   private context(user?: any, targetId?: number) {
     const ctx = this.strapi.requestContext.get();
     const actor = actorFor(ctx, user);
@@ -60,16 +76,17 @@ export class MediaRecovery {
     await this.gate(point, { key: operation.key, attempt: operation.attempt, objectIndex });
   }
   private heartbeat(operation: Operation) {
-    let active = false;
-    const timer = setInterval(async () => {
-      if (active) return;
-      active = true;
-      try { await this.journal.heartbeat(operation); }
-      catch { /* Every storage mutation and final commit checks the lease again. */ }
-      finally { active = false; }
+    let pending: Promise<void> | undefined;
+    const timer = setInterval(() => {
+      if (pending) return;
+      const current = this.journal.heartbeat(operation).catch(() => {
+        // Every storage mutation and final commit checks the lease again.
+      });
+      pending = current;
+      void current.then(() => { if (pending === current) pending = undefined; });
     }, RECONCILE_MS);
     timer.unref();
-    return () => clearInterval(timer);
+    return async () => { clearInterval(timer); await pending; };
   }
   private async execute(original: any, kind: OperationKind, data: any, files: any[], user?: any, oldFile?: any) {
     const { ctx, actor, key } = this.context(user, oldFile?.id);
@@ -123,19 +140,29 @@ export class MediaRecovery {
         .whereIn('state', ['preparing', 'prepared']).update({ lease_until: this.journal.db.fn.now() }); } catch {}
       if (error instanceof RecoveryError) throw error;
       throw new RecoveryError(503, 'OPERATION_PENDING', 'Media recovery is pending; keep the operation key and retry');
-    } finally { stopHeartbeat(); }
+    } finally { await stopHeartbeat(); }
   }
   upload(original: any, request: any, opts?: any) {
-    return this.execute(original, 'upload', request.data, Array.isArray(request.files) ? request.files : [request.files], opts?.user);
+    return this.track(() => this.execute(original, 'upload', request.data, Array.isArray(request.files) ? request.files : [request.files], opts?.user));
   }
-  async replace(original: any, id: number, request: any, opts?: any) {
-    const oldFile = await this.strapi.db.query(FILE_UID).findOne({ where: { id }, populate: ['createdBy', 'folder'] });
-    if (!oldFile) throw new RecoveryError(404, 'MEDIA_NOT_FOUND', 'Media not found');
-    return this.execute(original, 'replace', request.data, [request.file], opts?.user, oldFile);
+  replace(original: any, id: number, request: any, opts?: any) {
+    return this.track(async () => {
+      const oldFile = await this.strapi.db.query(FILE_UID).findOne({ where: { id }, populate: ['createdBy', 'folder'] });
+      if (!oldFile) throw new RecoveryError(404, 'MEDIA_NOT_FOUND', 'Media not found');
+      return this.execute(original, 'replace', request.data, [request.file], opts?.user, oldFile);
+    });
   }
-  remove(original: any, file: any) { return this.execute(original, 'delete', {}, [], undefined, file); }
+  remove(original: any, file: any) { return this.track(() => this.execute(original, 'delete', {}, [], undefined, file)); }
   async receipt(key: string, actor: string) { return publicReceipt(await this.journal.getOwned(operationKey(key), actor)); }
-  async reconcile() {
+  reconcile() {
+    if (this.activeCycle) return this.activeCycle;
+    if (this.stopped) return Promise.resolve();
+    const cycle = this.runReconcile();
+    this.activeCycle = cycle;
+    void cycle.then(() => { if (this.activeCycle === cycle) this.activeCycle = undefined; });
+    return cycle;
+  }
+  private async runReconcile() {
     if (this.running || this.stopped) return;
     this.running = true;
     try {
@@ -161,7 +188,7 @@ export class MediaRecovery {
             try { await this.journal.interrupt(operation, true, error.code); } catch {}
           }
           this.strapi.log.warn('[media-recovery] Operation remains pending; dependency or lease unavailable');
-        } finally { stopHeartbeat(); }
+        } finally { await stopHeartbeat(); }
       }
       for (let count = 0; count < 8 && !this.stopped; count++) {
         const cleanup = await this.journal.claimCleanup();
