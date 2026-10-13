@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createStrapi } from '@strapi/strapi';
+import { stopRecoveryForJournalQualification } from '../../src/extensions/upload/strapi-server';
 import { MediaJournal } from '../../src/infrastructure/recovery/journal';
 import { FILE_UID, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE } from '../../src/infrastructure/recovery/types';
 import { mediaVersion } from '../../src/infrastructure/recovery/prepare';
@@ -15,6 +16,9 @@ async function main() {
     assert.equal(Boolean(process.env[name]), false, `${name} must not override the synthetic database`);
   }
   const application = await createStrapi({ appDir: process.cwd(), distDir: `${process.cwd()}/dist` }).load();
+  // Its bootstrap starts a normal reconciler. Drain only this test process
+  // before deliberately expiring leases; long-lived CMS pods must not run yet.
+  await stopRecoveryForJournalQualification();
   const db = application.db.connection;
   const journal = new MediaJournal(application);
   const actor = { id: `qualification:${campaign}` };

@@ -1,11 +1,21 @@
 import { MediaRecovery, actorFor, operationKey } from '../../infrastructure/recovery/engine';
 import { createRecoveryStorage } from '../../infrastructure/recovery/storage';
+import { createFaultGate } from '../../infrastructure/recovery/fault-gate';
 import { FILE_UID, Operation, RecoveryError } from '../../infrastructure/recovery/types';
 
 // Private extension contracts are deliberately pinned and checked by tests/build.
 const EXPECTED_STRAPI = '5.52.3';
 let recovery: MediaRecovery;
 let application: any;
+// Used only by the isolated PostgreSQL transaction-check process, never an HTTP route.
+export async function stopRecoveryForJournalQualification() {
+  if (process.env.GTHF_RECOVERY_ISOLATED !== 'true' || process.env.GTHF_RECOVERY_NAMESPACE !== 'gthf-recovery'
+    || !process.env.GTHF_RECOVERY_CAMPAIGN || !application || !recovery) {
+    throw new Error('Journal qualification requires the isolated campaign process');
+  }
+  createFaultGate(); // Revalidate marker, namespace and every database override.
+  await recovery.stop();
+}
 async function permissions(ctx: any, operation: Operation) {
   const pm = application.service('admin::permission').createPermissionsManager({ ability: ctx.state.userAbility,
     action: operation.kind === 'upload' ? 'plugin::upload.assets.create' : 'plugin::upload.assets.update', model: FILE_UID });

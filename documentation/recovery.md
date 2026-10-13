@@ -69,6 +69,11 @@ perdue. L’import URL de l’interface bêta inactive est hors garantie de rée
 La suppression groupée attend tous les commits médias avant de supprimer les dossiers ;
 une coupure peut laisser un dossier partiellement vidé, sans référence recréée.
 
+`npm run test:recovery:journal` charge Strapi puis draine uniquement le worker de
+ce processus de test, avant les expirations artificielles de bail. Son helper
+interne exige tous les garde-fous VM ; aucune option générale ne désactive le
+réconciliateur normal. Exécuter ce Job avant les pods CMS permanents du banc.
+
 Les tables privées `gthf_media_operations` et `gthf_media_cleanup` sont additives.
 Les reçus sont accessibles sous `/upload/recovery/operations/:key`, avec session admin,
 propriété de l’intention et vérification des permissions conditionnelles actuelles.
