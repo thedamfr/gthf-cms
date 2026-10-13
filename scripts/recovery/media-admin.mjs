@@ -58,7 +58,8 @@ async function until(read, predicate, timeout = 60_000) {
   throw new Error('Golden Journey condition timed out');
 }
 let mode = 'normal'; let intercepted = false; let blockReceipts = false;
-let capturedCommit; const requests = []; const receiptRequests = [];
+let capturedCommit; let capturedBulkCommit; let bulkAllowed;
+const requests = []; const bulkRequests = []; const receiptRequests = [];
 try {
   const health = await fetch(CMS + '/api/release', { signal: AbortSignal.timeout(5000) });
   assert.equal(health.status, 200);
@@ -106,6 +107,23 @@ try {
       receiptRequests.push(url.pathname.split('/').at(-1));
       if (blockReceipts) return route.abort('connectionreset');
     }
+    if (request.method() === 'POST' && url.pathname === '/upload/actions/bulk-delete') {
+      const key = request.headers()['idempotency-key']; assert.match(key || '', UUID);
+      const payload = request.postDataJSON();
+      assert.deepEqual(payload, bulkAllowed, 'Bulk deletion is restricted to the synthetic media/folder created by this browser scenario');
+      const saved = await page.evaluate((key) => Object.keys(sessionStorage).filter((name) => name.startsWith('gthf-media-intents-v1:'))
+        .flatMap((name) => JSON.parse(sessionStorage.getItem(name))).find((item) => item.key === key), key);
+      assert.equal(saved?.kind, 'bulk-delete'); assert.deepEqual(saved?.payload, payload, 'The exact parent selection must be saved before the POST');
+      bulkRequests.push({ key, payload, mode });
+      if (!intercepted && mode === 'bulk-before-send') { intercepted = true; return route.abort('connectionreset'); }
+      if (!intercepted && mode === 'bulk-after-commit') {
+        intercepted = true;
+        const response = await route.fetch();
+        assert.equal(response.status(), 200, 'This scenario hides only a real complete bulk commit');
+        capturedBulkCommit = await response.json(); blockReceipts = true;
+        return route.abort('connectionreset');
+      }
+    }
     if (request.method() === 'POST' && /^\/upload(?:\/files)?$/.test(url.pathname)) {
       const key = request.headers()['idempotency-key'];
       assert.match(key || '', UUID, 'A real admin mutation must carry its saved identity');
@@ -138,12 +156,12 @@ try {
   const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#4263eb' } }).png().toBuffer();
   await fs.writeFile(fixture, bytes, { mode: 0o600 });
   const intents = () => page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.startsWith('gthf-media-intents-v1:'))
-    .flatMap((key) => JSON.parse(sessionStorage.getItem(key))).map(({ key, status, files }) => ({ key, status, files })));
-  const selectNew = async () => {
+    .flatMap((key) => JSON.parse(sessionStorage.getItem(key))).map(({ key, status, files, kind, payload, progress }) => ({ key, status, files, kind, payload, progress })));
+  const selectNew = async (selectedFixture = fixture) => {
     await page.goto(CMS + '/admin/plugins/upload');
     await page.evaluate((hide) => { window.__gthfLoseNextUpload = hide; }, mode === 'after-commit');
     await page.getByRole('button', { name: /add new assets|ajouter.*médias/i }).first().click();
-    await page.locator('input[type=file]').first().setInputFiles(fixture);
+    await page.locator('input[type=file]').first().setInputFiles(selectedFixture);
     await page.getByRole('button', { name: /upload.*library|téléverser.*médiathèque/i }).click();
   };
   const committed = (key) => until(intents, (rows) => rows.some((row) => row.key === key && row.status === 'committed'));
@@ -184,6 +202,90 @@ try {
   const ids = (Array.isArray(capturedCommit) ? capturedCommit : [capturedCommit]).map((file) => file.id);
   assert.ok(ids.every(Number.isInteger));
   report.scenarios.push({ name: step, status: 'passed', operationKey: lostKey, mediaIds: ids, postCount: 1, simulation: 'real successful browser multipart response discarded by an injected XHR load listener before the admin receives it' });
+  // Both bulk scenarios use fresh, uniquely named synthetic files plus one
+  // freshly created empty folder. The route guard checks their exact IDs before
+  // allowing any destructive request; unrelated campaign media stay untouched.
+  const makeBulkSelection = async () => {
+    mode = 'normal';
+    const files = [];
+    for (let index = 0; index < 2; index++) {
+      const name = 'recovery-browser-bulk-' + randomUUID() + '.png';
+      const filePath = path.join(directory, name); await fs.writeFile(filePath, bytes, { mode: 0o600 });
+      const acknowledged = page.waitForResponse((response) => response.request().method() === 'POST' && /^\/upload(?:\/files)?$/.test(new URL(response.url()).pathname));
+      const offset = requests.length; await selectNew(filePath); const uploadKey = await nextKey(offset);
+      const response = await acknowledged; assert.ok(response.ok());
+      const body = await response.json(); const file = (Array.isArray(body) ? body : [body])[0];
+      assert.ok(Number.isSafeInteger(file.id) && file.id > 0); assert.equal(file.name, name);
+      await committed(uploadKey); files.push(file);
+    }
+    await page.goto(CMS + '/admin/plugins/upload');
+    await page.getByRole('button', { name: /add new folder/i }).click();
+    const folderName = 'recovery-browser-folder-' + randomUUID();
+    await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill(folderName);
+    const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/upload/folders');
+    await page.getByRole('dialog').getByRole('button', { name: 'Create', exact: true }).click();
+    const folderResponse = await created; assert.ok(folderResponse.ok()); const folderBody = await folderResponse.json();
+    const folder = folderBody.data; assert.ok(Number.isSafeInteger(folder.id) && folder.id > 0); assert.equal(folder.name, folderName);
+    await page.goto(CMS + '/admin/plugins/upload');
+    for (const file of files) {
+      await page.locator('[role="button"]').filter({ has: page.getByRole('heading', { name: file.name, exact: true }) }).getByRole('checkbox').check();
+    }
+    await page.getByRole('checkbox', { name: new RegExp(folderName) }).check();
+    bulkAllowed = { fileIds: files.map((file) => file.id).sort((a, b) => a - b), folderIds: [folder.id] };
+    return { files, folder };
+  };
+  const confirmBulk = async () => {
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  };
+  const assertSelectionGone = async ({ files, folder }) => {
+    const listing = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/upload/files');
+    const folders = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/upload/folders');
+    await page.goto(CMS + '/admin/plugins/upload');
+    for (const [pending, deleted] of [[listing, files.map((file) => file.id)], [folders, [folder.id]]]) {
+      const response = await pending; assert.ok(response.ok());
+      const body = await response.json(); const rows = body.results || body.data || body;
+      assert.ok(Array.isArray(rows), 'The actual admin listing must have loaded successfully');
+      assert.ok(rows.every((row) => !deleted.includes(row.id)));
+    }
+    await page.getByRole('button', { name: /add new assets/i }).waitFor();
+    for (const file of files) assert.equal(await page.getByRole('heading', { name: file.name, exact: true }).count(), 0);
+    assert.equal(await page.getByRole('checkbox', { name: new RegExp(folder.name) }).count(), 0);
+  };
+  step = 'Golden Journey mixed bulk deletion retries one saved parent after transport loss';
+  const selectedRetry = await makeBulkSelection();
+  mode = 'bulk-before-send'; intercepted = false;
+  const bulkStart = bulkRequests.length; await confirmBulk();
+  const bulkRetryKey = (await until(() => bulkRequests, (rows) => rows.length > bulkStart))[bulkStart].key;
+  await committed(bulkRetryKey);
+  const bulkRetries = bulkRequests.slice(bulkStart); assert.ok(bulkRetries.length >= 2);
+  assert.deepEqual([...new Set(bulkRetries.map((item) => item.key))], [bulkRetryKey]);
+  assert.ok(bulkRetries.every((item) => JSON.stringify(item.payload) === JSON.stringify(bulkAllowed)));
+  await assertSelectionGone(selectedRetry);
+  report.scenarios.push({ name: step, status: 'passed', operationKey: bulkRetryKey, selected: bulkAllowed, attempts: bulkRetries.length,
+    simulation: 'first bulk browser request aborted before sending; real Strapi/SQL deletion on the retry' });
+
+  step = 'Golden Journey mixed bulk committed receipt survives reload without another deletion';
+  const selectedLost = await makeBulkSelection();
+  mode = 'bulk-after-commit'; intercepted = false; capturedBulkCommit = undefined;
+  const bulkLostStart = bulkRequests.length; await confirmBulk();
+  const bulkLostKey = (await until(() => bulkRequests, (rows) => rows.length > bulkLostStart))[bulkLostStart].key;
+  assert.notEqual(bulkLostKey, bulkRetryKey, 'A new explicit selection requires a new parent identity');
+  const hiddenBulk = await until(() => capturedBulkCommit, Boolean);
+  assert.deepEqual(hiddenBulk.data.files.map((file) => file.id).sort((a, b) => a - b), bulkAllowed.fileIds);
+  assert.deepEqual(hiddenBulk.data.folders.map((folder) => folder.id).sort((a, b) => a - b), bulkAllowed.folderIds);
+  assert.ok((await intents()).some((item) => item.key === bulkLostKey && item.kind === 'bulk-delete'));
+  blockReceipts = false; mode = 'normal';
+  await page.goto(CMS + '/admin/plugins/gthf-media-recovery');
+  await page.getByRole('heading', { name: 'Reprise des médias' }).waitFor(); await committed(bulkLostKey);
+  assert.equal(bulkRequests.slice(bulkLostStart).length, 1); assert.ok(receiptRequests.includes(bulkLostKey));
+  const savedBulk = (await intents()).find((item) => item.key === bulkLostKey);
+  assert.equal(savedBulk.progress.total, 2); assert.equal(savedBulk.progress.committed, 2); assert.equal(savedBulk.progress.failed, 0);
+  assert.ok(savedBulk.progress.children.every((child) => child.status === 'committed'));
+  await page.screenshot({ path: path.join(directory, 'bulk-receipt.png'), fullPage: true });
+  await assertSelectionGone(selectedLost);
+  report.scenarios.push({ name: step, status: 'passed', operationKey: bulkLostKey, selected: bulkAllowed, postCount: 1, childCount: savedBulk.progress.total,
+    simulation: 'real successful JSON bulk response discarded with Playwright after server commit, then receipt read after page reload' });
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.failedStep = step; report.errorType = error.name;

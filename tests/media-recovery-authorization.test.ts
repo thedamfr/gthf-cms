@@ -73,6 +73,7 @@ test('autonomous recovery makes revoked work terminal but preserves uncertainty 
   for (const [failure, terminal] of [[new RecoveryError(403, 'AUTHORIZATION_REVOKED', 'revoked'), true], [new Error('database unavailable'), false]] as const) {
     const engine = new MediaRecovery({ db: { connection: {} }, log: { warn() {} } }, {} as any);
     let first = true; let interrupted: any[] | undefined;
+    engine.batches.claimExpired = async () => undefined;
     engine.journal.claimExpired = async () => { if (!first) return undefined; first = false; return { ...operation(), state: 'prepared' }; };
     engine.journal.commit = async () => { throw failure; };
     engine.journal.interrupt = async (...args) => { interrupted = args; };

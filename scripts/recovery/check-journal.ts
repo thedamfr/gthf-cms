@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createStrapi } from '@strapi/strapi';
 import { MediaJournal } from '../../src/infrastructure/recovery/journal';
-import { FILE_UID, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, RecoveryError } from '../../src/infrastructure/recovery/types';
+import { FILE_UID, FOLDER_UID, MEDIA_BATCH_TABLE, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, RecoveryError } from '../../src/infrastructure/recovery/types';
 import { mediaVersion } from '../../src/infrastructure/recovery/prepare';
 import { sha256 } from '../../src/infrastructure/recovery/storage';
+import { checkBatches } from './check-batches';
 
 let stage = 'isolated guards';
 function checkpoint(value: string) { stage = value; process.stdout.write(`Journal qualification: ${value}\n`); }
@@ -33,6 +34,7 @@ async function main() {
   const actor = { id: `qualification:${campaign}` };
   const keys: string[] = [];
   const hashes: string[] = [];
+  const folderIds: number[] = [];
   const checks: string[] = [];
   try {
     // Strapi's load-files clears require.cache while loading extensions. Resolve
@@ -216,6 +218,8 @@ async function main() {
     assert.equal(sweptAgain.id, cleanup.id);
     assert.notEqual(sweptAgain.lease_owner, cleanup.lease_owner);
     checks.push('abandoned immutable object keys survive a completed sweep and are claimed again');
+    checkpoint('durable batch identities, partial receipts and folder finalization');
+    await checkBatches(application, journal, actor, keys, hashes, folderIds, checks);
     process.stdout.write(JSON.stringify({ status: 'passed', campaign, revision: process.env.GTHF_REVISION || 'development', checkedAt: new Date().toISOString(), checks }, null, 2) + '\n');
   } catch (error: any) { error.recoveryStage = stage; throw error; } finally {
     checkpoint('remove only this test invocation and shut down');
@@ -224,7 +228,9 @@ async function main() {
     if (keys.length) {
       await db(MEDIA_CLEANUP_TABLE).whereIn('operation_key', keys).delete();
       await db(MEDIA_OPERATION_TABLE).whereIn('key', keys).delete();
+      await db(MEDIA_BATCH_TABLE).whereIn('key', keys).delete();
     }
+    if (folderIds.length) await application.db.query(FOLDER_UID).deleteMany({ where: { id: { $in: folderIds } } });
     await application.destroy();
   }
 }

@@ -1,6 +1,6 @@
 import { mediaVersion } from './prepare';
 import { randomUUID } from 'node:crypto';
-import { Actor, FILE_UID, LEASE_MS, INTERRUPTED_SWEEP_MS, Manifest, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, Operation, OperationKind, RecoveryError, StoredObject } from './types';
+import { Actor, FILE_UID, LEASE_MS, INTERRUPTED_SWEEP_MS, Manifest, MEDIA_CLEANUP_TABLE, MEDIA_OPERATION_TABLE, MEDIA_BATCH_TABLE, Operation, OperationKind, RecoveryError, StoredObject } from './types';
 
 // Strapi disables pg's JSONB parser globally. These private Knex tables bypass
 // Strapi's model-field decoder, so decode only their JSON columns at read time.
@@ -31,6 +31,17 @@ export class MediaJournal {
       }
       if (!await trx.schema.hasColumn(MEDIA_OPERATION_TABLE, 'target_version')) {
         await trx.schema.alterTable(MEDIA_OPERATION_TABLE, (table) => table.string('target_version', 64).nullable());
+      }
+      if (!await trx.schema.hasTable(MEDIA_BATCH_TABLE)) {
+        await trx.schema.createTable(MEDIA_BATCH_TABLE, (table) => {
+          table.uuid('key').primary(); table.string('actor', 160).notNullable(); table.integer('admin_user_id').nullable();
+          table.string('request_hash', 64).notNullable(); table.jsonb('input').notNullable(); table.jsonb('manifest').notNullable();
+          table.string('state', 20).notNullable().defaultTo('pending'); table.jsonb('receipt').nullable(); table.string('failure', 64).nullable();
+          table.uuid('attempt').notNullable(); table.uuid('lease_owner').nullable(); table.timestamp('lease_until', { useTz: true }).nullable();
+          table.timestamp('created_at', { useTz: true }).notNullable().defaultTo(trx.fn.now());
+          table.timestamp('updated_at', { useTz: true }).notNullable().defaultTo(trx.fn.now());
+          table.index(['state', 'lease_until']); table.index(['actor', 'created_at']);
+        });
       }
       if (!await trx.schema.hasTable(MEDIA_CLEANUP_TABLE)) {
         await trx.schema.createTable(MEDIA_CLEANUP_TABLE, (table) => {
@@ -66,6 +77,9 @@ export class MediaJournal {
   }
   async begin(input: { key: string; actor: Actor; kind: OperationKind; requestHash: string; targetId?: number; targetVersion?: string }): Promise<{ operation: Operation; acquired: boolean }> {
     return this.db.transaction(async (trx) => {
+      // Serialize a UUID across both private journals: a receipt always has one owner and one meaning.
+      await trx.raw('select pg_advisory_xact_lock(hashtextextended(?, 0))', [input.key]);
+      if (await trx(MEDIA_BATCH_TABLE).where({ key: input.key }).first()) throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key belongs to a different request');
       const inserted = await trx(MEDIA_OPERATION_TABLE).insert({ key: input.key, actor: input.actor.id,
         admin_user_id: input.actor.adminUserId ?? null, kind: input.kind, request_hash: input.requestHash,
         target_id: input.targetId ?? null, target_version: input.targetVersion ?? null, attempt: randomUUID(), state: 'preparing',

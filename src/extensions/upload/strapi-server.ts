@@ -2,6 +2,7 @@ import { MediaRecovery, actorFor, operationKey } from '../../infrastructure/reco
 import { createRecoveryStorage } from '../../infrastructure/recovery/storage';
 import { createFaultGate } from '../../infrastructure/recovery/fault-gate';
 import { adminMediaPermissions } from '../../infrastructure/recovery/authorization';
+import { batchPermissionOperation } from '../../infrastructure/recovery/batches';
 import { FILE_UID, Operation, RecoveryError } from '../../infrastructure/recovery/types';
 
 // Private extension contracts are deliberately pinned and checked by tests/build.
@@ -56,7 +57,19 @@ export default (plugin: any) => {
   plugin.controllers.recovery = {
     async find(ctx: any) {
       const actor = actorFor(ctx);
-      const operation = await recovery.journal.getOwned(operationKey(ctx.params.key), actor.id);
+      const key = operationKey(ctx.params.key);
+      const candidate = await recovery.batches.get(key);
+      if (candidate) {
+        const batch = await recovery.batches.getOwned(key, actor.id);
+        const pm = await permissions(ctx, batchPermissionOperation(batch));
+        const receipt = await recovery.batches.receipt(batch);
+        if (receipt.result) {
+          receipt.result.files = await pm.sanitizeOutput(receipt.result.files, { action: 'plugin::upload.read' });
+          receipt.result.folders = await application.service('admin::permission').createPermissionsManager({ ability: ctx.state.userAbility, model: 'plugin::upload.folder' }).sanitizeOutput(receipt.result.folders);
+        }
+        ctx.set('Cache-Control', 'no-store, max-age=0'); ctx.body = receipt; return;
+      }
+      const operation = await recovery.journal.getOwned(key, actor.id);
       const pm = await permissions(ctx, operation);
       const receipt = await recovery.receipt(operation.key, actor.id);
       if (receipt.result) receipt.result = await pm.sanitizeOutput(receipt.result, { action: 'plugin::upload.read' });
@@ -86,6 +99,12 @@ export default (plugin: any) => {
       }
     }
     return destroyFile.call(this, ctx);
+  };
+  plugin.controllers['admin-folder-file'].deleteMany = async (ctx: any) => {
+    const result = await recovery.bulkDelete(ctx);
+    const pmFile = application.service('admin::permission').createPermissionsManager({ ability: ctx.state.userAbility, action: 'plugin::upload.read', model: FILE_UID });
+    const pmFolder = application.service('admin::permission').createPermissionsManager({ ability: ctx.state.userAbility, model: 'plugin::upload.folder' });
+    ctx.body = { data: { files: await pmFile.sanitizeOutput(result.files), folders: await pmFolder.sanitizeOutput(result.folders) } };
   };
   const wrap = (controller: any) => {
     for (const [name, action] of Object.entries(controller)) {

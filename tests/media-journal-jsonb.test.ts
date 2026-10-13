@@ -9,12 +9,12 @@ const receipt = [{ id: 42, name: 'fixture' }];
 // Match Strapi's PostgreSQL dialect: JSONB is returned as text, including
 // RETURNING rows. This is deliberately different from node-pg's default parser.
 function database(row: any) {
-  const connection: any = () => {
+  const connection: any = (table: string) => {
     const query: any = {};
     for (const name of ['where', 'whereIn', 'andWhere', 'orderBy', 'forUpdate', 'skipLocked', 'insert', 'onConflict', 'ignore', 'update']) {
       query[name] = () => query;
     }
-    query.first = async () => row ? { ...row } : undefined;
+    query.first = async () => table === 'gthf_media_batches' ? undefined : row ? { ...row } : undefined;
     query.returning = async (field: string) => field === 'key' ? [] : [{ ...row }];
     return query;
   };

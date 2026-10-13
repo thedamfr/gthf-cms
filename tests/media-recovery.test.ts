@@ -109,7 +109,7 @@ test('shutdown drains an active reconciliation before closing storage and refuse
   let finish: () => void; let claims = 0; let closed = false;
   const pause = new Promise<void>((resolve) => { finish = resolve; });
   const engine = new MediaRecovery({ db: { connection: {} }, log: { warn() {} } }, { close: () => { closed = true; } } as any);
-  engine.journal.claimExpired = async () => { claims++; await pause; return undefined; };
+  engine.batches.claimExpired = async () => { claims++; await pause; return undefined; };
   const cycle = engine.reconcile();
   const stopping = engine.stop();
   await Promise.resolve(); assert.equal(closed, false);

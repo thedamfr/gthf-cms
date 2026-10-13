@@ -18,6 +18,7 @@ RUN npm run build \
 
 FROM ${NODE_IMAGE} AS runtime
 LABEL io.gthf.media-recovery="2"
+LABEL io.gthf.media-batch-recovery="1"
 WORKDIR /app
 ARG GTHDF_REVISION=development
 ARG GTHF_REVISION=${GTHDF_REVISION}

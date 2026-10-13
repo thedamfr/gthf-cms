@@ -70,6 +70,7 @@ test('a late PUT is cleaned on a later sweep while retry bytes and a foreign col
   state.tables[MEDIA_OPERATION_TABLE].push(operation);
   let expired = true; let claimed = 0;
   const engine = new MediaRecovery({ db: { connection: state.db }, log: { warn(message: string) { throw new Error(message); } } }, storage);
+  engine.batches.claimExpired = async () => undefined;
   engine.journal.claimExpired = async () => { if (!expired) return undefined; expired = false; return operation; };
   engine.journal.claimCleanup = async () => {
     const row = state.tables[MEDIA_CLEANUP_TABLE].find((entry) => entry.not_before <= state.now()

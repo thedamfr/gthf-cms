@@ -75,6 +75,7 @@ test('the Strapi runtime image is non-root and does not embed secrets', () => {
 
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^LABEL io\.gthf\.media-recovery="2"$/m);
+  assert.match(dockerfile, /^LABEL io\.gthf\.media-batch-recovery="1"$/m);
   assert.match(dockerfile, /strapi\.js", "start/);
   assert.doesNotMatch(dockerfile, /(APP_KEYS|ADMIN_JWT_SECRET|AWS_SECRET_ACCESS_KEY)=/);
 });

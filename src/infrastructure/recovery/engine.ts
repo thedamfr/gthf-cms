@@ -2,6 +2,7 @@ import { sanitize } from '@strapi/utils';
 import { randomUUID } from 'node:crypto';
 import { MediaJournal } from './journal';
 import { authorizeMediaOperation } from './authorization';
+import { MediaBatches, batchPermissionOperation } from './batches';
 import { createFaultGate, FaultPoint } from './fault-gate';
 import { existingObjects, mediaVersion, mediaPermissionSubject, prepareMedia, requestFingerprint } from './prepare';
 import { RecoveryStorage, sha256 } from './storage';
@@ -25,6 +26,7 @@ export function actorFor(ctx: any, user?: any): Actor {
 }
 export class MediaRecovery {
   readonly journal: MediaJournal;
+  readonly batches: MediaBatches;
   private gate: ReturnType<typeof createFaultGate>;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
@@ -34,6 +36,7 @@ export class MediaRecovery {
   constructor(private readonly strapi: any, private readonly storage: RecoveryStorage) {
     this.journal = new MediaJournal(strapi, (operation) => authorizeMediaOperation(strapi, operation));
     this.gate = createFaultGate();
+    this.batches = new MediaBatches(strapi, this.journal, storage, (batch) => authorizeMediaOperation(strapi, batchPermissionOperation(batch)), (point, context) => this.gate(point, context));
   }
   async start() {
     await this.journal.initialize();
@@ -159,6 +162,18 @@ export class MediaRecovery {
     });
   }
   remove(original: any, file: any) { return this.track(() => this.execute(original, 'delete', {}, [], undefined, file)); }
+  bulkDelete(ctx: any) {
+    return this.track(async () => {
+      const header = ctx.get('Idempotency-Key');
+      if (!header) throw new RecoveryError(409, 'ADMIN_RELOAD_REQUIRED', 'Actualisez l’administration avant de supprimer des médias.');
+      const key = operationKey(header); ctx.set('Idempotency-Key', key);
+      const { batch, acquired } = await this.batches.begin(key, actorFor(ctx), ctx.request.body);
+      if (batch.state === 'committed') { ctx.state.gthfMediaCommittedReplay = true; return batch.receipt; }
+      if (batch.state === 'failed') throw new RecoveryError(409, batch.failure || 'OPERATION_FAILED', 'La suppression est partiellement terminée ; consultez son reçu.');
+      if (!acquired) throw new RecoveryError(409, 'OPERATION_PENDING', 'La suppression est en cours de reprise.');
+      return this.batches.process(batch);
+    });
+  }
   async receipt(key: string, actor: string) { return publicReceipt(await this.journal.getOwned(operationKey(key), actor)); }
   reconcile() {
     if (this.activeCycle) return this.activeCycle;
@@ -172,6 +187,12 @@ export class MediaRecovery {
     if (this.running || this.stopped) return;
     this.running = true;
     try {
+      for (let count = 0; count < 8 && !this.stopped; count++) {
+        const batch = await this.batches.claimExpired();
+        if (!batch) break;
+        try { await this.batches.process(batch); }
+        catch { this.strapi.log.warn('[media-recovery] Batch remains pending or has a terminal partial result'); }
+      }
       for (let count = 0; count < 8 && !this.stopped; count++) {
         const operation = await this.journal.claimExpired();
         if (!operation) break;

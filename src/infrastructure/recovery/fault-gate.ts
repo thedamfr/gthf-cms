@@ -1,7 +1,7 @@
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export type FaultPoint = 'after-journal' | 'after-object' | 'before-commit' | 'after-commit' | 'during-cleanup';
+export type FaultPoint = 'after-journal' | 'after-object' | 'before-commit' | 'after-commit' | 'during-cleanup' | 'after-batch-child';
 export type FaultContext = { key: string; attempt: string; objectIndex?: number };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

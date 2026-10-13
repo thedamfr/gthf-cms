@@ -1,5 +1,7 @@
 export const MEDIA_OPERATION_TABLE = 'gthf_media_operations';
 export const MEDIA_CLEANUP_TABLE = 'gthf_media_cleanup';
+export const MEDIA_BATCH_TABLE = 'gthf_media_batches';
+export const FOLDER_UID = 'plugin::upload.folder';
 export const LEASE_MS = 90_000;
 export const RECONCILE_MS = 15_000;
 export const INTERRUPTED_SWEEP_MS = 60_000;

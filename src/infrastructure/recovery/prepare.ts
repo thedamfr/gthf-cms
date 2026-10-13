@@ -40,6 +40,7 @@ export async function requestFingerprint(kind: string, targetId: number | undefi
   return sha256(stableJSON({ kind, targetId, data, files }));
 }
 function serializable(value: any): any {
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(serializable);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
     .filter(([key, entry]) => !['filepath', 'tmpWorkingDirectory', 'buffer', 'stream', 'getStream'].includes(key) && typeof entry !== 'function')
