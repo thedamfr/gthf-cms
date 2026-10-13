@@ -92,10 +92,33 @@ export default (plugin: any) => {
     }
     return controller;
   };
-  // Content API controllers are factories; admin controllers are plain objects.
+  // Content API routes already enforce their token/role action before invoking
+  // the controller. Preserve that action and sanitisation when DELETE is replayed.
   for (const [name, controller] of Object.entries(plugin.controllers)) {
-    plugin.controllers[name] = typeof controller === 'function'
-      ? (...args: any[]) => wrap(controller(...args)) : wrap(controller);
+    if (typeof controller !== 'function') { plugin.controllers[name] = wrap(controller); continue; }
+    plugin.controllers[name] = (...args: any[]) => {
+      const instance = controller(...args);
+      if (name === 'content-api') {
+        const originalDestroy = instance.destroy;
+        instance.destroy = async (ctx: any) => {
+          const header = ctx.get('Idempotency-Key');
+          if (header) {
+            const key = operationKey(header);
+            if (await recovery.journal.get(key)) {
+              const previous = await recovery.journal.getOwned(key, actorFor(ctx).id);
+              if (previous.kind !== 'delete' || previous.target_id !== Number(ctx.params.id)) throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key belongs to a different request');
+              if (previous.state === 'committed') {
+                ctx.set('Idempotency-Key', key);
+                ctx.body = await application.contentAPI.sanitize.output(previous.receipt, application.getModel(FILE_UID), { auth: ctx.state.auth });
+                return;
+              }
+            }
+          }
+          return originalDestroy(ctx);
+        };
+      }
+      return wrap(instance);
+    };
   }
   return plugin;
 };

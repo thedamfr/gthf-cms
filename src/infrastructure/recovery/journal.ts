@@ -3,7 +3,7 @@ import { Actor, FILE_UID, LEASE_MS, Manifest, MEDIA_CLEANUP_TABLE, MEDIA_OPERATI
 
 /** Private additive tables: never registered as a content type or exposed by REST. */
 export class MediaJournal {
-  constructor(private readonly strapi: any, public readonly owner = randomUUID()) {}
+  constructor(private readonly strapi: any) {}
   get db() { return this.strapi.db.connection; }
   async initialize() {
     await this.db.transaction(async (trx) => {
@@ -47,7 +47,7 @@ export class MediaJournal {
       const inserted = await trx(MEDIA_OPERATION_TABLE).insert({ key: input.key, actor: input.actor.id,
         admin_user_id: input.actor.adminUserId ?? null, kind: input.kind, request_hash: input.requestHash,
         target_id: input.targetId ?? null, attempt: randomUUID(), state: 'preparing',
-        lease_owner: this.owner, lease_until: this.lease(trx) }).onConflict('key').ignore().returning('key');
+        lease_owner: randomUUID(), lease_until: this.lease(trx) }).onConflict('key').ignore().returning('key');
       const row: Operation = await trx(MEDIA_OPERATION_TABLE).where({ key: input.key }).forUpdate().first();
       if (row.actor !== input.actor.id) throw new RecoveryError(409, 'IDEMPOTENCY_CONFLICT', 'This operation key is unavailable');
       if (row.kind !== input.kind || row.request_hash !== input.requestHash || row.target_id !== (input.targetId ?? null)) {
@@ -58,19 +58,19 @@ export class MediaJournal {
       if (row.state !== 'interrupted') return { operation: row, acquired: false };
       const [next] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({
         attempt: randomUUID(), state: 'preparing', manifest: null, failure: null,
-        lease_owner: this.owner, lease_until: this.lease(trx), updated_at: trx.fn.now(),
+        lease_owner: randomUUID(), lease_until: this.lease(trx), updated_at: trx.fn.now(),
       }).returning('*');
       return { operation: next, acquired: true };
     });
   }
-  async assertLease(operation: Pick<Operation, 'key' | 'attempt'>, trx = this.db) {
-    const row = await trx(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: this.owner })
+  async assertLease(operation: Pick<Operation, 'key' | 'attempt' | 'lease_owner'>, trx = this.db) {
+    const row = await trx(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: operation.lease_owner })
       .where('lease_until', '>', trx.fn.now()).first();
     if (!row || !['preparing', 'prepared'].includes(row.state)) throw new RecoveryError(409, 'OPERATION_LEASE_LOST', 'This media operation is being recovered');
     return row as Operation;
   }
-  async heartbeat(operation: Pick<Operation, 'key' | 'attempt'>) {
-    const count = await this.db(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: this.owner })
+  async heartbeat(operation: Pick<Operation, 'key' | 'attempt' | 'lease_owner'>) {
+    const count = await this.db(MEDIA_OPERATION_TABLE).where({ key: operation.key, attempt: operation.attempt, lease_owner: operation.lease_owner })
       .whereIn('state', ['preparing', 'prepared']).where('lease_until', '>', this.db.fn.now())
       .update({ lease_until: this.lease(), updated_at: this.db.fn.now() });
     if (!count) throw new RecoveryError(409, 'OPERATION_LEASE_LOST', 'This media operation is being recovered');
@@ -130,12 +130,14 @@ export class MediaJournal {
       return receipt;
     });
   }
-  async claimExpired(): Promise<Operation | undefined> {
+  async claimExpired(key?: string): Promise<Operation | undefined> {
     return this.db.transaction(async (trx) => {
-      const row = await trx(MEDIA_OPERATION_TABLE).whereIn('state', ['preparing', 'prepared'])
-        .where('lease_until', '<=', trx.fn.now()).orderBy('updated_at').forUpdate().skipLocked().first();
+      const query = trx(MEDIA_OPERATION_TABLE).whereIn('state', ['preparing', 'prepared'])
+        .where('lease_until', '<=', trx.fn.now());
+      if (key) query.where({ key });
+      const row = await query.orderBy('updated_at').forUpdate().skipLocked().first();
       if (!row) return undefined;
-      const [claimed] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({ lease_owner: this.owner,
+      const [claimed] = await trx(MEDIA_OPERATION_TABLE).where({ key: row.key }).update({ lease_owner: randomUUID(),
         lease_until: this.lease(trx), updated_at: trx.fn.now() }).returning('*');
       return claimed;
     });
@@ -146,13 +148,13 @@ export class MediaJournal {
         .andWhere((q) => q.whereNull('lease_until').orWhere('lease_until', '<=', trx.fn.now()))
         .orderBy('created_at').forUpdate().skipLocked().first();
       if (!row) return undefined;
-      const [claimed] = await trx(MEDIA_CLEANUP_TABLE).where({ id: row.id }).update({ lease_owner: this.owner,
+      const [claimed] = await trx(MEDIA_CLEANUP_TABLE).where({ id: row.id }).update({ lease_owner: randomUUID(),
         lease_until: this.lease(trx), updated_at: trx.fn.now() }).returning('*');
       return claimed;
     });
   }
-  async finishCleanup(id: string) {
-    const count = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: this.owner }).where('lease_until', '>', this.db.fn.now())
+  async finishCleanup(id: string, leaseOwner: string) {
+    const count = await this.db(MEDIA_CLEANUP_TABLE).where({ id, lease_owner: leaseOwner }).where('lease_until', '>', this.db.fn.now())
       .update({ state: 'done', lease_owner: null, lease_until: null, updated_at: this.db.fn.now() });
     if (!count) throw new RecoveryError(409, 'CLEANUP_LEASE_LOST', 'Cleanup will be resumed');
   }

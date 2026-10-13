@@ -58,7 +58,10 @@ export function createRecoveryStorage(config: any): RecoveryStorage {
       if (!await exists(object)) throw new Error('Media upload was not durable');
     },
     exists,
-    async remove(object) { await send(new DeleteObjectCommand({ Bucket: bucket, Key: object.key })); },
+    async remove(object) {
+      await send(new DeleteObjectCommand({ Bucket: bucket, Key: object.key }));
+      if (await exists({ key: object.key })) throw new Error('Media cleanup is not yet confirmed');
+    },
     close() { client.destroy(); },
   };
 }

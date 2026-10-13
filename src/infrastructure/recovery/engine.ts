@@ -100,13 +100,17 @@ export class MediaRecovery {
       } catch {}
       return result;
     } catch (error: any) {
+      if (!operation.manifest && ['ValidationError', 'ApplicationError'].includes(error.name)) {
+        try { await this.journal.interrupt(operation, true, 'INVALID_MEDIA'); } catch {}
+        throw new RecoveryError(400, 'INVALID_MEDIA', 'The media could not be validated');
+      }
       if (error instanceof RecoveryError && ['MEDIA_CHANGED', 'OBJECT_CONFLICT', 'INVALID_MEDIA'].includes(error.code)) {
         try { await this.journal.interrupt(operation, true, error.code); } catch {}
         throw error;
       }
       // Preserve uncertainty after a lost storage response. Recovery checks every
       // immutable object before deciding whether it can commit or must interrupt.
-      try { await this.journal.db('gthf_media_operations').where({ key: operation.key, attempt: operation.attempt, lease_owner: this.journal.owner })
+      try { await this.journal.db('gthf_media_operations').where({ key: operation.key, attempt: operation.attempt, lease_owner: operation.lease_owner })
         .whereIn('state', ['preparing', 'prepared']).update({ lease_until: this.journal.db.fn.now() }); } catch {}
       if (error instanceof RecoveryError) throw error;
       throw new RecoveryError(503, 'OPERATION_PENDING', 'Media recovery is pending; keep the operation key and retry');
@@ -158,7 +162,7 @@ export class MediaRecovery {
             await this.storage.remove(object);
             await this.gate('during-cleanup', { key: cleanup.operation_key, attempt: cleanup.attempt, objectIndex: index });
           }
-          await this.journal.finishCleanup(cleanup.id);
+          await this.journal.finishCleanup(cleanup.id, cleanup.lease_owner);
         } catch { this.strapi.log.warn('[media-recovery] Object cleanup will be resumed'); }
       }
     } catch { this.strapi.log.warn('[media-recovery] Reconciliation waits for the database'); }
