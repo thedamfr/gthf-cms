@@ -22,6 +22,7 @@ function setup({ acquired = true, state = 'prepared', failure = undefined as str
   return { engine, journal, prepared, committed, inputs, interrupted };
 }
 test('batch input has one canonical identity and refuses unsafe IDs or additional instructions', () => {
+  for (const empty of [{}, { fileIds: [] }, { folderIds: [] }, { fileIds: [], folderIds: [] }]) assert.throws(() => normalizeBatchInput(empty), (error: any) => error.code === 'INVALID_MEDIA_BATCH');
   assert.deepEqual(normalizeBatchInput({ folderIds: [3, 2, 3], fileIds: [42, 1, 42] }), { fileIds: [1, 42], folderIds: [2, 3] });
   for (const value of [null, [], { fileIds: ['42'] }, { folderIds: [-1] }, { folderIds: [0] }, { fileIds: [Infinity] }, { force: true }]) {
     assert.throws(() => normalizeBatchInput(value), (error: any) => error.code === 'INVALID_MEDIA_BATCH');

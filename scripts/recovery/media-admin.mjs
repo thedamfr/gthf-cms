@@ -342,7 +342,7 @@ try {
       await page.goto(CMS + '/admin/plugins/upload');
       await page.evaluate((hide) => { window.__gthfLoseUrl = hide; }, mode === 'url-after-commit');
       await page.getByRole('button', { name: 'New', exact: true }).click();
-      await page.getByRole('menuitem', { name: /import from url/i }).click();
+      await page.getByRole('menuitem', { name: /(?:import|upload) from url/i }).click();
       await page.getByRole('dialog').locator('textarea[name=urls]').fill(Array(count).fill(urlFixture.url).join('\n'));
       await page.getByRole('dialog').getByRole('button', { name: 'Upload', exact: true }).click();
     };

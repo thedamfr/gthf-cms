@@ -23,7 +23,9 @@ export function normalizeBatchInput(value: any): BatchInput {
     if (!Array.isArray(values) || values.some((id) => !Number.isSafeInteger(id) || id <= 0)) throw new RecoveryError(400, 'INVALID_MEDIA_BATCH', 'Media identifiers must be positive integers');
     return [...new Set<number>(values)].sort((a, b) => a - b);
   };
-  return { fileIds: ids(value.fileIds), folderIds: ids(value.folderIds) };
+  const input = { fileIds: ids(value.fileIds), folderIds: ids(value.folderIds) };
+  if (!input.fileIds.length && !input.folderIds.length) throw new RecoveryError(400, 'INVALID_MEDIA_BATCH', 'Select at least one file or folder to remove');
+  return input;
 }
 export function batchChildKey(parent: string, id: number) {
   const hex = sha256(`${parent}:delete:${id}`);
