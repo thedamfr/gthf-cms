@@ -35,7 +35,7 @@ async function currentOwner() {
 // Native selection creates a new File object even for identical bytes. Reusing
 // that selection preserves its identity; another target, owner or metadata is
 // a separate intent. No file bytes are retained here or in sessionStorage.
-const mediaSelections = new WeakMap<object, { signature: string; key: string }>();
+const mediaSelections = new WeakMap<object, Map<string, string>>();
 export async function runMediaIntent(options: { url: string; formData?: FormData; signal?: AbortSignal; shape: 'array' | 'single'; key?: string; selection?: object; method?: 'POST' | 'DELETE' }, transport: (key: string) => Promise<any>) {
   const owner = await currentOwner();
   const path = safeMediaPath(options.url, backend());
@@ -43,11 +43,10 @@ export async function runMediaIntent(options: { url: string; formData?: FormData
   if (!key && options.selection) {
     const fields = [...(options.formData?.entries() || [])].filter(([, value]) => typeof value === 'string');
     const signature = JSON.stringify({ owner, path, method: options.method || 'POST', shape: options.shape, fields });
-    let identity = mediaSelections.get(options.selection);
-    if (!identity || identity.signature !== signature) {
-      identity = { signature, key: crypto.randomUUID() }; mediaSelections.set(options.selection, identity);
-    }
-    key = identity.key;
+    let identities = mediaSelections.get(options.selection);
+    if (!identities) { identities = new Map(); mediaSelections.set(options.selection, identities); }
+    key = identities.get(signature);
+    if (!key) { key = crypto.randomUUID(); identities.set(signature, key); }
   }
   key ||= crypto.randomUUID();
   const existing = readIntents(owner).find((entry) => entry.key === key);

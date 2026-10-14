@@ -233,7 +233,8 @@ la suite attend onze succès ; sans elle, huit.
 Le transport `replaceAsset` de Strapi 5.52.3 est adapté au même journal client que
 les autres mutations. Le bouton de remplacement et **Crop → Apply** conservent le
 multipart natif et les métadonnées. Une sélection native `File` garde sa clé tant
-que propriétaire, cible et métadonnées restent identiques ; sélectionner à nouveau
+que propriétaire, cible et métadonnées restent identiques. Chaque tuple déjà vu
+conserve sa propre clé : passer de A à B puis revenir à A retrouve le reçu de A. Sélectionner à nouveau
 le même fichier crée un nouvel objet `File` et une nouvelle intention. Les reçus
 sont consultés avant de répéter une intention connue, y compris après rechargement.
 Un refus de permission courant reste un refus ; un échec de `sessionStorage`

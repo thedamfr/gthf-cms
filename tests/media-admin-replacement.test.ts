@@ -17,13 +17,13 @@ async function fixture() {
   const receipts = new Map<string, core.MediaReceipt>();
   const posts: { key: string; url: string; name: string; fields: string | null; signal: AbortSignal }[] = [];
   const reads: string[] = [];
-  const fault = { beforeSend: false, afterCommit: false, forbidden: false, storage: false, owner: 4 };
+  const fault = { beforeSend: false, afterCommit: false, forbidden: false, receiptForbidden: false, storage: false, owner: 4 };
   const saved = () => [...store.values()].flatMap((value) => JSON.parse(value)) as core.MediaIntent[];
   const transport = {
     get: async (url: string) => {
       if (url === '/admin/users/me') return { data: { data: { id: fault.owner } } };
       const key = url.split('/').at(-1)!; reads.push(key);
-      if (fault.forbidden) throw Object.assign(new Error('current permission denied'), { status: 403 });
+      if (fault.forbidden || fault.receiptForbidden) throw Object.assign(new Error('current permission denied'), { status: 403 });
       if (!receipts.has(key)) throw Object.assign(new Error('receipt absent'), { status: 404 });
       return { data: receipts.get(key) };
     },
@@ -141,4 +141,36 @@ test('reloaded replacement intent consults the stored receipt before requiring a
   const intent = clone(current.saved()[0]);
   const recovered = await current.client.resumeIntent(intent, [selected]);
   assert.equal(recovered.id, result.data.id); assert.equal(current.posts.length, 1);
+});
+
+
+test('an unresolved replacement A keeps its receipt identity through another signature B and back to A', async () => {
+  const current = await fixture(); const selected = file();
+  const firstInput = { id: 42, file: selected, fileInfo: { name: 'first.png', focalPoint: { x: 12, y: 18 } } };
+  current.fault.afterCommit = true; current.fault.receiptForbidden = true;
+  const lost = await current.replace(firstInput);
+  assert.ok(lost.error); assert.equal(current.saved()[0].status, 'pending');
+  const firstKey = current.posts[0].key;
+  current.fault.receiptForbidden = false;
+  const other = await current.replace({ id: 43, file: selected, fileInfo: { name: 'other.png' } });
+  assert.ok(other.data); assert.notEqual(current.posts[1].key, firstKey);
+  const retried = await current.replace(firstInput);
+  assert.equal(retried.data.hash, 'version-' + firstKey);
+  assert.equal(current.posts.length, 2, 'A must read its original committed receipt, not send a third write');
+  assert.equal(current.saved().find((intent) => intent.key === firstKey)?.status, 'committed');
+});
+
+test('each owner, target and metadata signature retains its key after visiting other signatures', async () => {
+  const current = await fixture(); const selected = file();
+  const first = { id: 42, file: selected, fileInfo: { focalPoint: { x: 12, y: 18 } } };
+  await current.replace(first); const firstKey = current.posts[0].key;
+  await current.replace({ ...first, id: 43 });
+  await current.replace({ ...first, fileInfo: { focalPoint: { x: 13, y: 18 } } });
+  current.fault.owner = 5; await current.replace(first); const otherOwnerKey = current.posts[3].key;
+  assert.equal(new Set(current.posts.map((request) => request.key)).size, 4);
+  current.fault.owner = 4;
+  assert.equal((await current.replace(first)).data.hash, 'version-' + firstKey);
+  current.fault.owner = 5;
+  assert.equal((await current.replace(first)).data.hash, 'version-' + otherOwnerKey);
+  assert.equal(current.posts.length, 4, 'Returning to a known tuple must not allocate another identity');
 });
