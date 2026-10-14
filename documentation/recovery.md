@@ -7,7 +7,7 @@ y compris pour les lots et imports URL. La qualification isolée réussit :
 21 contrôles PostgreSQL, huit Golden Journeys navigateur et 14 parcours avec trois
 coupures VM, aux révisions précisées en annexe. Les droits sont revérifiés avant
 commit et consultation. Le workflow épingle le déployeur compatible fusionné.
-Restent les images CI finales et leur qualification avant livraison. Aucune validation de production n’est annoncée.
+Le correctif des remplacements/recadrages bêta attend sa qualification navigateur. Restent les images CI finales avant livraison ; aucune validation de production n’est annoncée.
 
 ## Synthèse
 
@@ -160,7 +160,7 @@ les essais échoués restent privés ; la synthèse est rattachée à la PR #32.
 Ces résultats concernent les images locales de ces SHA. Le workflow épingle le
 déployeur frontend `9aba52eec841ca5a412865fb2a823d198ff43bf5`, fusionné par la
 PR #43 : première activation en Recreate et rollback limité aux capacités médias
-v2/lots v1. Sa CI main doit réussir avant fusion CMS. Les images finales publiées
+v2/lots v1. Sa CI main a réussi avant la fusion CMS #32. Les images finales publiées
 par les CI restent à requalifier avant staging et
 production. La recette `npm run test:e2e -- staging` dépend du clone frontend
 voisin ; la production utilise `npm run test:e2e -- production` en lecture seule.
@@ -185,12 +185,19 @@ reçus après une réponse de commit perdue. Deux autres Golden Journeys utilise
 la vraie sélection groupée de deux fichiers et un dossier : réessai avant envoi,
 puis réponse perdue avec reçu parent après rechargement. Ces pertes réseau sont simulées dans
 Playwright et restent distinctes des vrais SIGKILL/coupures QEMU de la campagne.
+Trois parcours supplémentaires exercent les contrôles bêta **Replace this file** et
+**Crop → Apply** : réessai après perte avant envoi avec la même clé ; nouvelle sélection
+volontaire avec clé neuve, réponse perdue après commit puis reçu après rechargement
+sans second POST ; recadrage persistant et reçu interdit au lecteur anonyme. La
+révocation des droits courants est aussi vérifiée par les tests du client et les
+parcours serveur de la campagne commune. Ces nouveaux parcours doivent être exécutés
+sur la révision corrective ; les huit succès historiques ci-dessus ne les couvrent pas.
 Aucune coupure VM n’est effectuée par cette commande. Les médias synthétiques
 créés restent conservés pour les vérifications SQL/S3 et le nettoyage final du banc.
 
 ### Golden Journeys navigateur URL
 
-La suite comporte cinq parcours médias usuels. L’option suivante ajoute trois
+La suite comporte huit parcours médias, remplacement et recadrage. L’option suivante ajoute trois
 Golden Journeys URL : sélections volontaires/URL dupliquées aux clés distinctes,
 interruption avant envoi puis reprise de la même entrée après rechargement, et
 flux perdu après commit puis reçu retrouvé sans second POST.
@@ -213,7 +220,27 @@ Playwright afin d’exercer le flux serveur SSE. Cette option ne modifie aucun
 réglage de l’application. La médiathèque historique télécharge les URL dans le
 navigateur puis utilise l’upload multipart déjà journalisé ; ce chemin distinct
 reste protégé par ses reçus multipart. Sans `--url-fixture`, le rapport indique
-explicitement que les trois parcours URL n’ont pas été exécutés.
+explicitement que les trois parcours URL n’ont pas été exécutés. Avec cette option,
+la suite attend onze succès ; sans elle, huit.
+
+### Remplacement et recadrage dans la médiathèque bêta
+
+Le transport `replaceAsset` de Strapi 5.52.3 est adapté au même journal client que
+les autres mutations. Le bouton de remplacement et **Crop → Apply** conservent le
+multipart natif et les métadonnées. Une sélection native `File` garde sa clé tant
+que propriétaire, cible et métadonnées restent identiques ; sélectionner à nouveau
+le même fichier crée un nouvel objet `File` et une nouvelle intention. Les reçus
+sont consultés avant de répéter une intention connue, y compris après rechargement.
+Un refus de permission courant reste un refus ; un échec de `sessionStorage`
+empêche l’envoi. Les octets du fichier ne sont pas conservés côté navigateur.
+
+```sh
+npm exec tsx -- --test tests/media-admin-replacement.test.ts tests/media-admin-adapter.test.ts
+```
+
+Ces tests exécutent les modules Strapi réellement adaptés et le client de reprise.
+Le transport HTTP et le stockage navigateur y sont simulés ; la commande navigateur
+ci-dessus apporte la preuve SQL/S3 et des interactions réelles sur le banc isolé.
 
 ### Suppression groupée : parent durable et périmètre figé
 
