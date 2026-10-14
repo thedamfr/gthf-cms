@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { boundedObservation, matchesNavigationResponse, observedJson } from './browser-observation.mjs';
+import { boundedObservation, matchesNavigationResponse, observedJson, publishObservationReports } from './browser-observation.mjs';
 
 const CMS = 'http://127.0.0.1:33137';
 const MEDIA = 'http://127.0.0.1:33190';
@@ -527,6 +527,5 @@ try {
 }
 
 async function writeReport() {
-  await fs.writeFile(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
-  await fs.writeFile(path.join(directory, 'REPORT.md'), `# Golden Journeys admin médias\n\n## Summary\n\nRésultat : ${report.status}. Révision CMS : ${report.cmsRevision}. Script : ${sourceRevision}. Le test utilise uniquement la campagne synthétique ${report.campaignId}.\n\n## Synthèse\n\n${report.scenarios.map((item) => '- ' + item.name + ' : ' + item.status).join('\n')}\n\n${report.failedStep ? 'Étape en échec : ' + report.failedStep + '. Aucune acceptation annoncée.\n\n' : ''}${report.limits.join(' ')}\n\nNettoyage : ${report.cleanup ? JSON.stringify(report.cleanup) : 'pas encore commencé'}. Un état finalizing, un nettoyage pending ou une fermeture unconfirmed ne constitue pas une réussite.\n\n## Annexes\n\nDétails expurgés : report.json. Trace et capture privées dans ce répertoire, à ne pas publier.\n`, { mode: 0o600 });
+  await publishObservationReports(directory, report, `# Golden Journeys admin médias\n\n## Summary\n\nRésultat : ${report.status}. Révision CMS : ${report.cmsRevision}. Script : ${sourceRevision}. Le test utilise uniquement la campagne synthétique ${report.campaignId}.\n\n## Synthèse\n\n${report.scenarios.map((item) => '- ' + item.name + ' : ' + item.status).join('\n')}\n\n${report.failedStep ? 'Étape en échec : ' + report.failedStep + '. Aucune acceptation annoncée.\n\n' : ''}${report.limits.join(' ')}\n\nNettoyage : ${report.cleanup ? JSON.stringify(report.cleanup) : 'pas encore commencé'}. Un état finalizing, un nettoyage pending ou une fermeture unconfirmed ne constitue pas une réussite.\n\n## Annexes\n\nDétails expurgés : report.json. Trace et capture privées dans ce répertoire, à ne pas publier.\n`);
 }
