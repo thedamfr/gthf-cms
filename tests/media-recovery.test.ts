@@ -1,0 +1,183 @@
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { MediaRecovery, actorFor, operationKey } from '../src/infrastructure/recovery/engine';
+import { existingObjects, mediaVersion, mediaPermissionSubject, prepareMedia, requestFingerprint, stableJSON } from '../src/infrastructure/recovery/prepare';
+import { sha256 } from '../src/infrastructure/recovery/storage';
+import { publicReceipt } from '../src/infrastructure/recovery/types';
+
+const key = '22222222-2222-4222-8222-222222222222';
+const attempt = '33333333-3333-4333-8333-333333333333';
+test('one explicit intent is stable, while two new intents remain distinct for identical input', () => {
+  assert.equal(operationKey(key.toUpperCase()), key);
+  assert.notEqual(operationKey(), operationKey());
+  assert.throws(() => operationKey('another/file'), /UUID/);
+});
+test('receipt ownership separates admin, users and API tokens and rejects anonymous HTTP', () => {
+  assert.deepEqual(actorFor({ state: { userAbility: {}, user: { id: 4 } } }), { id: 'admin:4', adminUserId: 4 });
+  assert.deepEqual(actorFor({ state: { user: { id: 4 } } }), { id: 'user:4' });
+  assert.deepEqual(actorFor({ state: { auth: { strategy: { name: 'api-token' }, credentials: { id: 4 } } } }), { id: 'api-token:4' });
+  assert.throws(() => actorFor({ state: {} }), /Authentication/);
+});
+test('public pending receipts expose neither journal manifests nor another actor identity', () => {
+  const receipt = publicReceipt({ key, kind: 'upload', state: 'prepared', actor: 'admin:8', manifest: { internal: 'private-path' }, receipt: { unsafe: 'not committed' } } as any);
+  assert.deepEqual(receipt, { key, kind: 'upload', status: 'pending', result: undefined, retryable: false, error: undefined });
+});
+test('fingerprints bind the bytes, metadata, destination and operation without global file deduplication', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-fingerprint-'));
+  try {
+    const filepath = path.join(directory, 'file'); await fs.writeFile(filepath, 'first');
+    const file = { filepath, originalFilename: 'test.txt', mimetype: 'text/plain' };
+    const a = await requestFingerprint('upload', undefined, { b: 2, a: 1 }, [file]);
+    assert.equal(a, await requestFingerprint('upload', undefined, { a: 1, b: 2 }, [file]));
+    assert.notEqual(a, await requestFingerprint('replace', 1, { a: 1, b: 2 }, [file]));
+    await fs.writeFile(filepath, 'other');
+    assert.notEqual(a, await requestFingerprint('upload', undefined, { a: 1, b: 2 }, [file]));
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+test('replacement preparation leaves old objects intact and describes all new immutable bytes before storage writes', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-prepare-'));
+  try {
+    const filepath = path.join(directory, 'file'); await fs.writeFile(filepath, 'new body');
+    let writes = 0;
+    const storage = { key: (file) => file.hash + file.ext, url: (objectKey) => 'https://media.example/' + objectKey,
+      put: async () => { writes++; }, remove: async () => { writes++; } };
+    const original = { formatFileInfo: async ({ filename, type, size }, info) => ({ name: filename, mime: type, size: size / 1000, ext: '.txt', hash: 'random', ...info }) };
+    const strapi = { config: { get: () => ({ provider: 'aws-s3' }) }, getModel: () => ({ attributes: Object.fromEntries(['name', 'mime', 'size', 'ext', 'hash', 'url', 'provider', 'provider_metadata', 'formats', 'folder', 'folderPath'].map((key) => [key, {}])) }),
+      plugin: () => ({ service: (name) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => {} } }) };
+    const old = { id: 42, hash: 'old-immutable', ext: '.txt', provider: 'aws-s3', updatedAt: '2026-10-13T00:00:00.000Z', folder: { id: 7 }, createdBy: { id: 4, password: 'private-admin-hash', resetPasswordToken: 'private-reset' } };
+    const { manifest, bodies, cleanup } = await prepareMedia(strapi, original, storage as any, { key, attempt } as any, { fileInfo: {} }, [{ filepath, originalFilename: 'example.txt', mimetype: 'text/plain', size: 8 }], old);
+    assert.equal(writes, 0);
+    assert.deepEqual(manifest.obsolete, [{ key: 'old-immutable.txt' }]);
+    assert.equal(manifest.files[0].targetId, 42);
+    assert.equal(manifest.files[0].values.folder, 7);
+    assert.equal(manifest.files[0].permissionSubject.createdBy, 4);
+    assert.equal(JSON.stringify(manifest).includes('private-admin-hash'), false);
+    assert.equal(JSON.stringify(manifest).includes('private-reset'), false);
+    assert.notEqual(manifest.files[0].values.hash, old.hash);
+    assert.equal(manifest.objects[0].sha256, sha256('new body'));
+    const spool = bodies.get(manifest.objects[0].key)!;
+    assert.equal(await fs.readFile(spool, 'utf8'), 'new body');
+    assert.equal((await fs.stat(spool)).mode & 0o077, 0);
+    assert.equal(JSON.stringify(manifest).includes(filepath), false);
+    assert.equal(JSON.stringify(manifest).includes('tmpWorkingDirectory'), false);
+    assert.equal(old.hash, 'old-immutable');
+    await cleanup();
+    assert.equal(await fs.stat(spool).catch(() => null), null);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+test('cleanup never assumes ownership of media stored by a different provider', () => {
+  const storage = { key: (file) => file.hash + file.ext } as any;
+  assert.deepEqual(existingObjects({ hash: 'old', ext: '.jpg', provider: 'local' }, storage, 'aws-s3'), []);
+});
+test('canonical JSON preserves arrays ordering while ignoring absent optional fields', () => {
+  assert.equal(stableJSON({ b: undefined, a: ['b', 'a'] }), '{"a":["b","a"]}');
+});
+
+test('an old admin without an intent is rejected before any database or storage effect', async () => {
+  const ctx = { path: '/upload', state: { userAbility: {}, user: { id: 4 } }, get: () => '', set() {} };
+  const engine = new MediaRecovery({ requestContext: { get: () => ctx }, db: { connection: {} } }, {} as any);
+  await assert.rejects(engine.upload({}, { data: {}, files: [] }), (error: any) => error.code === 'ADMIN_RELOAD_REQUIRED');
+});
+test('oversized media becomes a terminal 413 receipt without storage effects', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-too-large-'));
+  try {
+    const filepath = path.join(directory, 'file'); await fs.writeFile(filepath, 'test');
+    const ctx = { path: '/upload', state: { userAbility: {}, user: { id: 4 } }, get: () => key, set() {} };
+    const strapi = { requestContext: { get: () => ctx }, db: { connection: {} }, config: { get: () => ({ provider: 'aws-s3' }) },
+      getModel: () => ({ attributes: {} }), plugin: () => ({ service: (name) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => { throw Object.assign(new Error('too large'), { name: 'PayloadTooLargeError' }); } } }) };
+    const engine = new MediaRecovery(strapi, {} as any);
+    const operation = { key, attempt, state: 'preparing' };
+    engine.journal.begin = async () => ({ acquired: true, operation }) as any;
+    let failure: any;
+    engine.journal.interrupt = async (...args) => { failure = args; };
+    const original = { formatFileInfo: async () => ({ hash: 'test', ext: '.pdf' }) };
+    await assert.rejects(engine.upload(original, { data: {}, files: [{ filepath, size: 4 }] }), (error: any) => error.status === 413 && error.code === 'MEDIA_TOO_LARGE');
+    assert.deepEqual(failure, [operation, true, 'MEDIA_TOO_LARGE']);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('target versions detect same-timestamp metadata and folder changes without relation-population noise', () => {
+  const file = { hash: 'old', name: 'original', folderPath: '/1', updatedAt: '2026-10-13T00:00:00Z' };
+  assert.notEqual(mediaVersion(file), mediaVersion({ ...file, name: 'edited' }));
+  assert.notEqual(mediaVersion(file), mediaVersion({ ...file, folderPath: '/2' }));
+  assert.equal(mediaVersion(file), mediaVersion({ ...file, createdBy: { id: 4 }, folder: { id: 1 } }));
+});
+test('shutdown drains an active reconciliation before closing storage and refuses new cycles', async () => {
+  let finish: () => void; let claims = 0; let closed = false;
+  const pause = new Promise<void>((resolve) => { finish = resolve; });
+  const engine = new MediaRecovery({ db: { connection: {} }, log: { warn() {} } }, { close: () => { closed = true; } } as any);
+  engine.batches.claimExpired = async () => { claims++; await pause; return undefined; };
+  const cycle = engine.reconcile();
+  const stopping = engine.stop();
+  await Promise.resolve(); assert.equal(closed, false);
+  finish!(); await cycle; await stopping;
+  assert.equal(closed, true);
+  await engine.reconcile(); assert.equal(claims, 1);
+  await assert.rejects(engine.upload({}, { data: {}, files: [] }), (error: any) => error.code === 'CMS_STOPPING');
+});
+test('shutdown waits for an HTTP media operation already in flight', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-stop-upload-'));
+  try {
+    const filepath = path.join(directory, 'file'); await fs.writeFile(filepath, 'test');
+    let finish: () => void; let began: () => void; let closed = false;
+    const pause = new Promise<void>((resolve) => { finish = resolve; });
+    const started = new Promise<void>((resolve) => { began = resolve; });
+    const ctx = { path: '/upload', state: { userAbility: {}, user: { id: 4 } }, get: () => key, set() {} };
+    const engine = new MediaRecovery({ requestContext: { get: () => ctx }, db: { connection: {} } }, { close: () => { closed = true; } } as any);
+    engine.journal.begin = async () => { began!(); await pause; return { acquired: false, operation: { actor: 'internal', state: 'committed', receipt: [{ id: 7 }] } } as any; };
+    const request = engine.upload({}, { data: {}, files: [{ filepath }] });
+    await started; const stopping = engine.stop();
+    await Promise.resolve(); assert.equal(closed, false);
+    finish!(); assert.deepEqual(await request, [{ id: 7 }]); await stopping;
+    assert.equal(closed, true);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('delete permission snapshots retain relation IDs without populated admin secrets', () => {
+  const subject = mediaPermissionSubject({ id: 12, name: 'fixture', mime: 'text/plain',
+    createdBy: { id: 4, password: 'secret-hash', resetPasswordToken: 'secret-reset', registrationToken: 'secret-registration' },
+    updatedBy: { id: 5, password: 'secret-other' }, folder: { id: 8, createdBy: { password: 'secret-folder' } },
+    related: [{ privateField: 'secret-related' }] });
+  assert.deepEqual(subject, { id: 12, name: 'fixture', mime: 'text/plain', createdBy: 4, updatedBy: 5, folder: 8 });
+  assert.equal(JSON.stringify(subject).includes('secret-'), false);
+  assert.equal(mediaPermissionSubject({ createdBy: { password: 'secret-without-id' } }).createdBy, null);
+});
+
+
+test('a streamed URL import keeps its internal operation key without mutating already-sent headers', () => {
+  let headerWrites = 0;
+  const ctx = { path: '/upload/actions/upload-from-urls', headerSent: true, state: { userAbility: {}, user: { id: 4 } }, get: () => '', set() { headerWrites++; throw new Error('ERR_HTTP_HEADERS_SENT'); } };
+  const engine = new MediaRecovery({ requestContext: { get: () => ctx }, db: { connection: {} } }, {} as any);
+  const first = (engine as any).context(); const second = (engine as any).context();
+  assert.match(first.key, /^[a-f0-9-]{36}$/); assert.notEqual(first.key, second.key);
+  assert.equal(first.actor.id, 'admin:4'); assert.equal(headerWrites, 0);
+});
+
+test('URL media uses its explicit source intent and durably prepares immutable bytes before S3', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gthf-url-engine-'));
+  try {
+    const filepath = path.join(directory, 'source.txt'); await fs.writeFile(filepath, 'isolated URL body');
+    const ctx = { path: '/upload/actions/upload-from-urls', headerSent: true, state: { userAbility: {}, user: { id: 4 } }, get: () => '', set() { assert.fail('SSE headers are already sent'); } };
+    const strapi = { requestContext: { get: () => ctx }, db: { connection: {} }, config: { get: () => ({ provider: 'aws-s3' }) },
+      getModel: () => ({ attributes: Object.fromEntries(['name', 'mime', 'size', 'ext', 'hash', 'url', 'provider', 'provider_metadata', 'formats', 'folder'].map((key) => [key, {}])) }),
+      plugin: () => ({ service: (name: string) => name === 'image-manipulation' ? { isImage: async () => false } : { checkFileSize: async () => {} } }) };
+    const order: string[] = []; let beginInput: any;
+    const storage = { key: (file: any) => file.hash + file.ext, url: (key: string) => 'https://media.example/' + key,
+      put: async (_object: any, body: string) => { order.push('S3'); assert.equal(await fs.readFile(body, 'utf8'), 'isolated URL body'); } };
+    const engine = new MediaRecovery(strapi, storage as any);
+    const operation: any = { key, attempt, state: 'preparing' };
+    engine.journal.begin = async (input: any) => { beginInput = input; return { acquired: true, operation }; };
+    engine.journal.prepare = async (_operation: any, manifest: any) => { order.push('prepared'); operation.manifest = manifest; };
+    engine.journal.assertLease = async () => {};
+    engine.journal.commit = async () => { order.push('committed'); return [{ id: 17 }]; };
+    const original = { formatFileInfo: async ({ filename, type, size }: any, info: any) => ({ name: filename, mime: type, size, ext: '.txt', ...info }) };
+    const sourceHash = sha256('url-import-v1 immutable source and folder');
+    const result = await engine.uploadFromUrl(original, { data: { fileInfo: { folder: 9 } }, files: [{ filepath, originalFilename: 'source.txt', mimetype: 'text/plain', size: 17 }] }, { key, requestHash: sourceHash });
+    assert.equal(beginInput.key, key); assert.equal(beginInput.requestHash, sourceHash); assert.equal(beginInput.actor.id, 'admin:4');
+    assert.deepEqual(order, ['prepared', 'S3', 'committed']); assert.deepEqual(result, [{ id: 17 }]);
+    assert.equal(operation.manifest.files[0].values.folder, 9);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});

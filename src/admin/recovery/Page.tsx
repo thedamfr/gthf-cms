@@ -1,0 +1,67 @@
+import React, { useEffect, useState } from 'react';
+import { useAuth } from '@strapi/admin/strapi-admin';
+import { fetchReceipt, readIntents, resumeIntent, saveIntent } from './client';
+import { applyReceipt, type MediaIntent } from './client-core';
+
+const labels = { pending: 'Résultat en cours de vérification', interrupted: 'Transfert interrompu, reprise possible', committed: 'Terminé', failed: 'Non terminé' };
+export default function RecoveryPage() {
+  const user = useAuth('GthfMediaRecovery', (state) => state.user);
+  const owner = user?.id ? `admin:${user.id}` : null;
+  const [items, setItems] = useState<MediaIntent[]>([]);
+  const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  useEffect(() => {
+    if (!owner) return;
+    let stopped = false;
+    let active = false;
+    const refresh = async () => {
+      if (active) return;
+      active = true;
+      try {
+        const rows = readIntents(owner);
+        let failed = false;
+        if (!stopped) setItems(rows);
+        for (const item of rows.filter((row) => row.status === 'pending' || row.status === 'interrupted')) {
+          try {
+            const receipt = await fetchReceipt(item.key);
+            applyReceipt(item, receipt); saveIntent(item);
+          } catch { failed = true; }
+        }
+        if (!stopped) { setItems(readIntents(owner)); setUnavailable(failed); }
+      } catch { if (!stopped) setUnavailable(true); }
+      finally { active = false; }
+    };
+    void refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [owner]);
+  const resume = async (item: MediaIntent, files: File[]) => {
+    setBusy(item.key); setError('');
+    try { await resumeIntent(item, files); setItems(readIntents(owner!)); }
+    catch (failure: any) { setError(failure.message); }
+    finally { setBusy(null); }
+  };
+  return <main style={{ padding: '2rem', maxWidth: 900 }}>
+    <h1>Reprise des médias</h1>
+    <p>Retrouvez ici le résultat des envois et suppressions de cet onglet après une interruption. Une opération terminée ne doit pas être recommencée. Une nouvelle sélection dans la médiathèque crée une nouvelle opération.</p>
+    {error && <p role="alert">{error}</p>}
+    {unavailable && <p role="status">Certains résultats sont temporairement inaccessibles. Les envois restent conservés dans cet onglet.</p>}
+    {!items.length && <p>Aucun envoi à vérifier dans cet onglet.</p>}
+    <ul>{items.map((item) => <li key={item.key} style={{ margin: '1.5rem 0' }}>
+      <strong>{item.kind === 'bulk-delete' ? `Suppression en lot (${item.payload?.fileIds.length || 0} médias, ${item.payload?.folderIds.length || 0} dossiers sélectionnés)` : item.kind === 'url-upload' ? `Import depuis une adresse : ${item.sourceUrl}` : item.files.map((file) => file.name).join(', ') || 'Suppression de média'}</strong>
+      <p role="status">{labels[item.status]}</p>
+      {item.progress && <><p>{item.progress.committed} / {item.progress.total} médias supprimés ; {item.progress.failed} en échec. {item.status !== 'committed' && 'Le lot et ses dossiers ne sont pas encore entièrement supprimés.'}</p>
+        <ul>{item.progress.children.map((child) => <li key={child.key}>Média {child.id} : {labels[child.status]}{child.error && ` (${child.error})`}</li>)}</ul></>}
+      {item.message && <p role="alert">{item.message} — consultez le résultat partiel avant de créer une nouvelle sélection.</p>}
+      {item.status === 'interrupted' && (item.kind === 'url-upload'
+        ? <button disabled={busy !== null} onClick={() => void resume(item, [])}>Reprendre cet import</button>
+        : item.method === 'DELETE' || item.kind === 'bulk-delete'
+        ? <button disabled={busy !== null} onClick={() => void resume(item, [])}>Reprendre la suppression</button>
+        : <label>Sélectionner les mêmes fichiers pour reprendre <input aria-label="Fichiers de la reprise" type="file" multiple={item.files.length > 1} disabled={busy !== null}
+          onChange={(event) => { if (event.target.files?.length) void resume(item, Array.from(event.target.files)); }} /></label>)}
+      {busy === item.key && <p>Reprise en cours…</p>}
+    </li>)}</ul>
+    <a href="/admin/plugins/upload">Retour à la médiathèque</a>
+  </main>;
+}
