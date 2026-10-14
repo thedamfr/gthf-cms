@@ -67,8 +67,8 @@ async function until(read, predicate, timeout = 60_000) {
   throw new Error('Golden Journey condition timed out');
 }
 let mode = 'normal'; let intercepted = false; let blockReceipts = false;
-let capturedCommit; let capturedBulkCommit; let bulkAllowed;
-const requests = []; const bulkRequests = []; const urlRequests = []; const receiptRequests = [];
+let capturedCommit; let capturedBulkCommit; let bulkAllowed; let replacementAllowed;
+const requests = []; const bulkRequests = []; const urlRequests = []; const replacementRequests = []; const receiptRequests = [];
 try {
   const health = await fetch(CMS + '/api/release', { signal: AbortSignal.timeout(5000) });
   assert.equal(health.status, 200);
@@ -105,6 +105,21 @@ try {
         return super.send(body);
       }
     };
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const address = args[0] instanceof Request ? args[0].url : String(args[0]);
+      const url = new URL(address, location.href);
+      const method = args[1]?.method || (args[0] instanceof Request ? args[0].method : 'GET');
+      if (window.__gthfLoseNextReplacement && method.toUpperCase() === 'POST'
+        && url.origin === origin && /^\/upload\/files\/\d+\/replace$/.test(url.pathname)) {
+        window.__gthfLoseNextReplacement = false;
+        const response = await nativeFetch(...args);
+        window.__gthfHiddenReplacement = { status: response.status, body: await response.clone().json() };
+        if (response.ok) throw new TypeError('Simulated lost replacement acknowledgment after the real commit');
+        return response;
+      }
+      return nativeFetch(...args);
+    };
   }, { origin: CMS });
   const handleRoute = async (route) => {
     const request = route.request(); const url = new URL(request.url());
@@ -115,6 +130,16 @@ try {
     if (url.pathname.startsWith('/upload/recovery/operations/')) {
       receiptRequests.push(url.pathname.split('/').at(-1));
       if (blockReceipts) return route.abort('connectionreset');
+    }
+    if (request.method() === 'POST' && /^\/upload\/files\/\d+\/replace$/.test(url.pathname)) {
+      assert.equal(Number(url.pathname.split('/')[3]), replacementAllowed,
+        'Replacement is restricted to the media created by this browser invocation');
+      const key = request.headers()['idempotency-key']; assert.match(key || '', UUID);
+      const saved = await page.evaluate((key) => Object.keys(sessionStorage).filter((name) => name.startsWith('gthf-media-intents-v1:'))
+        .flatMap((name) => JSON.parse(sessionStorage.getItem(name))).find((item) => item.key === key), key);
+      assert.equal(saved?.path, url.pathname); assert.equal(saved?.files.length, 1);
+      replacementRequests.push({ key, mediaId: replacementAllowed, mode });
+      if (!intercepted && mode === 'replace-before-send') { intercepted = true; return route.abort('connectionreset'); }
     }
     if (request.method() === 'POST' && url.pathname === '/upload/actions/upload-from-urls') {
       assert.ok(urlFixture, 'URL imports need an explicitly verified isolated source');
@@ -313,16 +338,89 @@ try {
   await assertSelectionGone(selectedLost);
   report.scenarios.push({ name: step, status: 'passed', operationKey: bulkLostKey, selected: bulkAllowed, postCount: 1, childCount: savedBulk.progress.total,
     simulation: 'real successful JSON bulk response discarded with Playwright after server commit, then receipt read after page reload' });
+  // Exercise the shipped beta Replace and crop controls, which share the same
+  // mutation. The feature is enabled solely inside this isolated test browser.
+  await context.addInitScript(() => {
+    let strapi;
+    Object.defineProperty(window, 'strapi', { configurable: true, get: () => strapi, set(value) {
+      strapi = value;
+      const original = value.future.isEnabled.bind(value.future);
+      value.future.isEnabled = (name) => name === 'betaMediaLibrary' || original(name);
+    } });
+  });
+  replacementAllowed = ids[0];
+  assert.ok(Number.isSafeInteger(replacementAllowed) && replacementAllowed > 0);
+  const replacementFixture = path.join(directory, 'replacement-' + randomUUID() + '.png');
+  await fs.writeFile(replacementFixture,
+    await sharp({ create: { width: 64, height: 48, channels: 3, background: '#14b8a6' } }).png().toBuffer(), { mode: 0o600 });
+  const openReplacementAsset = async () => {
+    const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/upload/files/' + replacementAllowed);
+    await page.goto(CMS + '/admin/plugins/upload?assetId=' + replacementAllowed);
+    const response = await loaded; assert.ok(response.ok());
+    const body = await response.json(); const asset = body.data || body;
+    assert.equal(asset.id, replacementAllowed); assert.equal(typeof asset.hash, 'string');
+    await page.getByRole('button', { name: 'Replace this file', exact: true }).waitFor();
+    return asset;
+  };
+  const selectReplacement = async () => {
+    await openReplacementAsset();
+    await page.evaluate((hide) => { window.__gthfLoseNextReplacement = hide; }, mode === 'replace-after-commit');
+    await page.getByRole('button', { name: 'Replace this file', exact: true }).click();
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await (await chooser).setFiles(replacementFixture);
+  };
+  const nextReplacementKey = async (offset) => (await until(() => replacementRequests, (rows) => rows.length > offset))[offset].key;
+  step = 'Golden Journey beta replacement retries the same saved intent after pre-send loss';
+  const originalAsset = await openReplacementAsset();
+  mode = 'replace-before-send'; intercepted = false; let replacementOffset = replacementRequests.length;
+  await selectReplacement(); const replacementRetry = await nextReplacementKey(replacementOffset); await committed(replacementRetry);
+  const replacementRetries = replacementRequests.slice(replacementOffset);
+  assert.ok(replacementRetries.length >= 2);
+  assert.deepEqual([...new Set(replacementRetries.map((item) => item.key))], [replacementRetry]);
+  const replacedAsset = await openReplacementAsset(); assert.notEqual(replacedAsset.hash, originalAsset.hash);
+  report.scenarios.push({ name: step, status: 'passed', operationKey: replacementRetry, mediaId: replacementAllowed,
+    attempts: replacementRetries.length, simulation: 'first real beta replacement multipart aborted before sending' });
+
+  step = 'Golden Journey new beta replacement selection survives lost commit and reload without reposting';
+  mode = 'replace-after-commit'; blockReceipts = true; replacementOffset = replacementRequests.length;
+  await selectReplacement(); const replacementLost = await nextReplacementKey(replacementOffset);
+  assert.notEqual(replacementLost, replacementRetry, 'New explicit identical selection must get a fresh identity');
+  const hiddenReplacement = await until(() => page.evaluate(() => window.__gthfHiddenReplacement), Boolean);
+  assert.ok(hiddenReplacement.status >= 200 && hiddenReplacement.status < 300);
+  const hiddenFile = (Array.isArray(hiddenReplacement.body) ? hiddenReplacement.body : [hiddenReplacement.body])[0];
+  assert.equal(hiddenFile.id, replacementAllowed); assert.notEqual(hiddenFile.hash, replacedAsset.hash);
+  blockReceipts = false; mode = 'normal';
+  await page.goto(CMS + '/admin/plugins/gthf-media-recovery'); await committed(replacementLost);
+  assert.equal(replacementRequests.slice(replacementOffset).length, 1); assert.ok(receiptRequests.includes(replacementLost));
+  const afterReload = await openReplacementAsset(); assert.equal(afterReload.hash, hiddenFile.hash);
+  report.scenarios.push({ name: step, status: 'passed', operationKey: replacementLost, mediaId: replacementAllowed, postCount: 1,
+    simulation: 'native fetch multipart completes; its successful response is hidden before Strapi receives it, then the saved receipt is read after reload' });
+
+  step = 'Golden Journey beta crop Apply persists its replacement and keeps anonymous receipts forbidden';
+  replacementOffset = replacementRequests.length;
+  assert.deepEqual([afterReload.width, afterReload.height], [64, 48]);
+  await page.getByRole('button', { name: 'Crop', exact: true }).click();
+  const applyCrop = page.getByRole('button', { name: 'Apply', exact: true });
+  await until(() => applyCrop.isEnabled(), Boolean); // The real CORS image has loaded into the canvas.
+  await page.getByLabel('Width (px)', { exact: true }).fill('32');
+  await page.getByLabel('Height (px)', { exact: true }).fill('24');
+  await applyCrop.click();
+  const cropKey = await nextReplacementKey(replacementOffset); await committed(cropKey);
+  assert.notEqual(cropKey, replacementLost); assert.equal(replacementRequests.slice(replacementOffset).length, 1);
+  const croppedAsset = await openReplacementAsset(); assert.notEqual(croppedAsset.hash, afterReload.hash);
+  assert.deepEqual([croppedAsset.width, croppedAsset.height], [32, 24], 'The actual cropped dimensions must persist in Strapi');
+  const anonymous = await fetch(CMS + '/upload/recovery/operations/' + cropKey, { signal: AbortSignal.timeout(5000) });
+  assert.ok([401, 403].includes(anonymous.status), 'An anonymous reader must not receive a private replacement receipt');
+  await page.screenshot({ path: path.join(directory, 'beta-replacement-crop.png'), fullPage: true });
+  report.scenarios.push({ name: step, status: 'passed', operationKey: cropKey, mediaId: replacementAllowed,
+    postCount: 1, anonymousReceiptStatus: anonymous.status, cropApplied: true,
+    dimensionsBefore: [afterReload.width, afterReload.height], dimensionsAfter: [croppedAsset.width, croppedAsset.height] });
   if (urlFixture) {
     // Enable Strapi's shipped beta library only inside this test browser. The
     // production feature configuration and the server's SSRF rules are unchanged.
     await context.addInitScript(({ origin }) => {
-      let strapi;
-      Object.defineProperty(window, 'strapi', { configurable: true, get: () => strapi, set(value) {
-        strapi = value;
-        const original = value.future.isEnabled.bind(value.future);
-        value.future.isEnabled = (name) => name === 'betaMediaLibrary' || original(name);
-      } });
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (...args) => {
         const address = args[0] instanceof Request ? args[0].url : String(args[0]);

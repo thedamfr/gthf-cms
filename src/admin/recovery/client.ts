@@ -32,13 +32,26 @@ async function currentOwner() {
   if (!id) throw new Error('La session administrateur doit être reconnectée.');
   return `admin:${id}`;
 }
-export async function runMediaIntent(options: { url: string; formData?: FormData; signal?: AbortSignal; shape: 'array' | 'single'; key?: string; method?: 'POST' | 'DELETE' }, transport: (key: string) => Promise<any>) {
-  const key = options.key || crypto.randomUUID();
+// Native selection creates a new File object even for identical bytes. Reusing
+// that selection preserves its identity; another target, owner or metadata is
+// a separate intent. No file bytes are retained here or in sessionStorage.
+const mediaSelections = new WeakMap<object, Map<string, string>>();
+export async function runMediaIntent(options: { url: string; formData?: FormData; signal?: AbortSignal; shape: 'array' | 'single'; key?: string; selection?: object; method?: 'POST' | 'DELETE' }, transport: (key: string) => Promise<any>) {
   const owner = await currentOwner();
   const path = safeMediaPath(options.url, backend());
+  let key = options.key;
+  if (!key && options.selection) {
+    const fields = [...(options.formData?.entries() || [])].filter(([, value]) => typeof value === 'string');
+    const signature = JSON.stringify({ owner, path, method: options.method || 'POST', shape: options.shape, fields });
+    let identities = mediaSelections.get(options.selection);
+    if (!identities) { identities = new Map(); mediaSelections.set(options.selection, identities); }
+    key = identities.get(signature);
+    if (!key) { key = crypto.randomUUID(); identities.set(signature, key); }
+  }
+  key ||= crypto.randomUUID();
   const existing = readIntents(owner).find((entry) => entry.key === key);
   const intent = existing || intentFromForm({ ...options, key, owner, path });
-  return executeIntent(intent, { transport, receipt: fetchReceipt, save: saveIntent, signal: options.signal });
+  return executeIntent(intent, { transport, receipt: fetchReceipt, save: saveIntent, signal: options.signal, receiptFirst: Boolean(existing) });
 }
 
 // A selection object keeps its identity across confirm retries; a new selection

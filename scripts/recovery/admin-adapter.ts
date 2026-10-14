@@ -107,6 +107,29 @@ export function adaptAdminUpload(source: string, name: string) {
     once('                        const streamResult = await processSSEStream({\n                            response,',
       '                        const streamResult = await processSSEStream({\n                            recoveryIntents,\n                            response,');
   } else if (name === 'future/services/assets.mjs') {
+    once(`query: ({ id, file, fileInfo })=>{
+                    const formData = new FormData();
+                    formData.append('files', file);
+                    if (fileInfo) {
+                        formData.append('fileInfo', JSON.stringify(fileInfo));
+                    }
+                    return {
+                        url: \`/upload/files/\${id}/replace\`,
+                        method: 'POST',
+                        data: formData
+                    };
+                },`, `queryFn: async ({ id, file, fileInfo }) => {
+                    try {
+                        const formData = new FormData();
+                        formData.append('files', file);
+                        if (fileInfo) formData.append('fileInfo', JSON.stringify(fileInfo));
+                        const url = window.strapi.backendURL + '/upload/files/' + id + '/replace';
+                        const data = await runMediaIntent({ url, formData, shape: 'single', selection: file },
+                            (key) => getFetchClient().post('/upload/files/' + id + '/replace', formData,
+                                { headers: { 'Idempotency-Key': key }, signal: AbortSignal.timeout(30000) }).then((response) => response.data));
+                        return { data };
+                    } catch (error) { return { error: { name: error.name, message: error.message } }; }
+                },`);
     once("query: (id)=>({\n                        url: `/upload/files/${id}`,\n                        method: 'DELETE'\n                    }),", `queryFn: async (id) => {
                     try {
                         const data = await runMediaIntent({ url: window.strapi.backendURL + '/upload/files/' + id, method: 'DELETE', shape: 'single' }, (key) => getFetchClient().del('/upload/files/' + id, { headers: { 'Idempotency-Key': key }, signal: AbortSignal.timeout(30000) }).then((response) => response.data));
