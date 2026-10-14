@@ -2,11 +2,12 @@
 
 ## Summary
 
-L’issue #29 ajoute un journal média durable et un réessai conservant la même
-intention, y compris pour les suppressions groupées et de dossiers. Le backend et l’adaptateur admin sont implémentés ; la qualification
-réelle PostgreSQL, S3 et navigateur reste en cours dans une VM synthétique.
-Aucune panne ni livraison n’est validée en production. Les droits sont revérifiés
-avant commit et consultation. L’import URL conserve aussi une identité par entrée et retrouve son reçu avant de télécharger à nouveau la source.
+L’issue #29 ajoute un journal média durable et conserve l’identité des réessais,
+y compris pour les lots et imports URL. La qualification isolée réussit :
+21 contrôles PostgreSQL, huit Golden Journeys navigateur et 14 parcours avec trois
+coupures VM, aux révisions précisées en annexe. Les droits sont revérifiés avant
+commit et consultation. Le workflow épingle le déployeur compatible fusionné.
+Restent les images CI finales et leur qualification avant livraison. Aucune validation de production n’est annoncée.
 
 ## Synthèse
 
@@ -113,8 +114,9 @@ les reçus restent conservés. Les clés abandonnées (y compris après révocat
 droits) gardent une ligne `recurring=true`, état `pending`, sans bail entre deux
 contrôles : une première absence ne prouve pas qu’un PUT serveur ne finira pas plus tard.
 Après chaque balayage, la prochaine vérification est planifiée à 60 secondes, puis
-prise par le cycle de 15 secondes. Le budget reste huit nettoyages par cycle, triés
-par échéance : une file plus longue allonge la redétection. Chaque clé nécessite au
+prise par le cycle de 15 secondes. Chaque cycle réserve huit lignes aux suppressions
+finies et deux aux surveillances récurrentes, triées par échéance dans leur classe :
+une file plus longue allonge la redétection. Chaque clé nécessite au
 moins un HEAD par balayage ; un objet tardif possédé ajoute DELETE puis HEAD. Le coût
 et le volume de ces suivis augmentent donc avec les tentatives interrompues. Ils ne
 sont pas purgés automatiquement faute de borne attestée de terminaison du PUT serveur.
@@ -130,10 +132,38 @@ doit jamais être utilisé en rollback dès présence de `retain_file_id`.
 Le protocole des lots exige en plus `io.gthf.media-batch-recovery=1` ; les images
 intermédiaires sans ce label ne sont pas des cibles de rollback compatibles.
 
-La commande E2E existante reste `npm run test:e2e -- staging`, dépendante du clone
-frontend voisin. La campagne isolée et ses preuves de SIGKILL, réponse perdue,
-indisponibilité des dépendances et deuxième crash sont en préparation. Elles doivent
-indiquer les SHA CMS/frontend, les délais, les permissions et les limites.
+### Qualification isolée du 14 octobre 2026
+
+Le CMS `5a31467c6c8c8922014a2894a58828ac120bbaba` a passé 21 contrôles PostgreSQL
+réels et huit Golden Journeys navigateur avec le script de cette même révision.
+La campagne commune utilise le frontend et harnais
+`01c80a9c95ddb7dd3868ded0b73a3802e58d9118` et le socle infra
+`23a87fdcd8b0a70d855397776f532f209cc7755a` : 14/14 Golden Journeys réussis,
+fin le 14 octobre à 02:04:28 UTC, trois vraies coupures QEMU et transports fermés.
+Les reprises après retour des dépendances ont pris 93,234 / 94,636 / 93,211 s,
+sous la cible de 300 s. Les cinq parcours de convergence frontend passent aussi.
+
+Dans le checkout frontend à cette révision :
+
+```sh
+npm run test:e2e:recovery -- --target vm --phase qualify --manifest "$GTHF_MANIFEST"
+npm run test:e2e:recovery -- --target vm --phase convergence --manifest "$GTHF_MANIFEST" --previous-manifest "$GTHF_PREVIOUS_MANIFEST"
+```
+
+Ces preuves couvrent les droits, la persistance, les opérations interrompues,
+les versions médias conservées et une partition frontend–CMS de 601 s. MinIO,
+la source URL synthétique et la réinjection explicite d’un PUT tardif ne qualifient
+pas les fournisseurs publics. Les pertes de réponse navigateur sont injectées ;
+les opérations SQL/S3 et les coupures VM sont réelles. Les rapports détaillés et
+les essais échoués restent privés ; la synthèse est rattachée à la PR #32.
+
+Ces résultats concernent les images locales de ces SHA. Le workflow épingle le
+déployeur frontend `9aba52eec841ca5a412865fb2a823d198ff43bf5`, fusionné par la
+PR #43 : première activation en Recreate et rollback limité aux capacités médias
+v2/lots v1. Sa CI main doit réussir avant fusion CMS. Les images finales publiées
+par les CI restent à requalifier avant staging et
+production. La recette `npm run test:e2e -- staging` dépend du clone frontend
+voisin ; la production utilise `npm run test:e2e -- production` en lecture seule.
 
 ### Golden Journey navigateur admin
 
