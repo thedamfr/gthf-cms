@@ -508,7 +508,12 @@ try {
   report.cleanup = { trace: tracing ? 'pending' : 'not-started', browser: browser ? 'pending' : 'not-started' };
   // Keep an interrupted/failed observation durable before closing transports.
   // A report still marked finalizing never constitutes a successful qualification.
-  await writeReport();
+  // Storage failure must not prevent closing this runner's trace and browser.
+  try { await writeReport(); }
+  catch (error) {
+    outcome = 'failed'; report.status = 'failed'; process.exitCode = 1;
+    report.publicationError = { phase: 'before-cleanup', name: error.name, code: error.code };
+  }
   if (tracing) {
     try {
       await boundedObservation(() => context.tracing.stop({ path: path.join(directory, 'trace.zip') }), 'Trace finalization', 10_000);

@@ -247,6 +247,8 @@ Un rapport est écrit avant la fermeture du navigateur. Les deux artefacts sont
 synchronisation du répertoire après chaque remplacement. `report.json` est publié
 en dernier pour préserver le JSON conservateur si une écriture préalable échoue.
 Le code de sortie reste nécessaire pour vérifier les erreurs après publication.
+Un échec du rapport préalable marque la qualification en échec et laisse le
+nettoyage de la trace et du navigateur s’exécuter ; il ne doit pas le court-circuiter.
 Le rapport reste `finalizing`
 jusqu’à la sauvegarde de la trace et la fermeture confirmée ; un échec de capture,
 de trace ou de fermeture n’est pas masqué. Les captures de diagnostic et la

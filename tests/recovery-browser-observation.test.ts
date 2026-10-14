@@ -126,3 +126,39 @@ test('a failed final JSON rename leaves acceptance finalizing even after the Mar
     assert.deepEqual((await fs.promises.readdir(directory)).sort(), ['REPORT.md', 'report.json']);
   });
 });
+
+for (const code of ['ENOSPC', 'EIO']) test(`the real finalization closes trace and browser after ${code} while preserving failure`, async () => {
+  const { publishObservationReports, boundedObservation } = await import('../scripts/recovery/browser-observation.mjs');
+  // Execute the script's actual finally block; do not reproduce its control flow.
+  const source = await fs.promises.readFile(path.resolve('scripts/recovery/media-admin.mjs'), 'utf8');
+  const start = source.indexOf('} finally {\n  let outcome = report.status;');
+  assert.ok(start >= 0);
+  const end = source.indexOf('\n}\n\nasync function writeReport()', start);
+  assert.ok(end > start);
+  const body = source.slice(start + '} finally {'.length, end);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const finalize = new AsyncFunction('report', 'writeReport', 'tracing', 'context', 'browser', 'boundedObservation', 'path', 'directory', 'process', body);
+  await reportDirectory(async (directory) => {
+    const events: string[] = [];
+    const report: any = { status: 'passed', scenarios: Array(11).fill({ status: 'passed' }) };
+    const processState = { exitCode: undefined as number | undefined, stdout: { write: () => events.push('stdout') } };
+    let publications = 0;
+    const writeReport = async () => {
+      events.push('publish'); publications++;
+      await publishObservationReports(directory, report, '# Qualification\n', publications === 1 ? {
+        ...fs.promises, writeFile: async (filename: string, content: string, options: any) => {
+          await fs.promises.writeFile(filename, content.slice(0, 8), options);
+          throw Object.assign(new Error('injected publication error'), { code });
+        },
+      } : fs.promises);
+    };
+    await finalize(report, writeReport, true, { tracing: { stop: async () => { events.push('trace'); } } },
+      { close: async () => { events.push('browser'); } }, boundedObservation, path, directory, processState);
+    assert.deepEqual(events, ['publish', 'trace', 'browser', 'publish', 'stdout']);
+    assert.equal(processState.exitCode, 1);
+    assert.equal(report.status, 'failed');
+    assert.deepEqual(report.cleanup, { trace: 'saved', browser: 'closed' });
+    assert.deepEqual(report.publicationError, { phase: 'before-cleanup', name: 'Error', code });
+    assert.equal(JSON.parse(await fs.promises.readFile(path.join(directory, 'report.json'), 'utf8')).status, 'failed');
+  });
+});
