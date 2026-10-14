@@ -228,6 +228,36 @@ reste protégé par ses reçus multipart. Sans `--url-fixture`, le rapport indiq
 explicitement que les trois parcours URL n’ont pas été exécutés. Avec cette option,
 la suite attend onze succès ; sans elle, huit.
 
+### Observation des réponses navigateur
+
+Le harnais attribue chaque ouverture du détail média à une navigation unique. Son
+paramètre `gthfRecoveryVisit` est conservé par le routeur Strapi ; le GET retenu doit
+porter exactement le Referer de cette navigation. Un refetch RTK déclenché dans
+l’ancienne page ne peut donc pas fournir la réponse de contrôle après rechargement.
+La lecture JSON Playwright est bornée à dix secondes : le timeout par défaut de
+la page ne borne pas `Response.body()`.
+
+L’image CI du main `86d91e837732dd30d21f867572e29a9597f373d0` a révélé cette course
+dans le harnais après un remplacement serveur réussi. Cet essai bloqué reste un
+échec conservé, sans acceptation de campagne. Il ne démontre pas un défaut du
+journal CMS. Le correctif du harnais doit être rejoué avec les onze parcours réels.
+
+Un rapport est écrit avant la fermeture du navigateur. Il reste `finalizing`
+jusqu’à la sauvegarde de la trace et la fermeture confirmée ; un échec de capture,
+de trace ou de fermeture n’est pas masqué. Les captures de diagnostic et la
+finalisation de trace ont des délais explicites, sans changer le cycle normal de
+fermeture Chromium ni attribuer celle-ci au contrôleur SSH.
+
+```sh
+npm exec tsx -- --test tests/recovery-browser-observation.test.ts
+```
+
+Ces tests ciblés simulent l’ordre des réponses et un corps jamais terminé ; le
+contrat de conservation du paramètre utilise le hook Strapi installé. Ils ne sont
+pas des Golden Journeys applicatifs. Le planner classe conservativement
+`scripts/recovery/*` parmi les entrées runtime : ce changement de harnais publie
+une nouvelle image, même sans modification du serveur ou de l’admin CMS.
+
 ### Remplacement et recadrage dans la médiathèque bêta
 
 Le transport `replaceAsset` de Strapi 5.52.3 est adapté au même journal client que

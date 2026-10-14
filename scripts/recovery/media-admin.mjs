@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { boundedObservation, matchesNavigationResponse, observedJson } from './browser-observation.mjs';
 
 const CMS = 'http://127.0.0.1:33137';
 const MEDIA = 'http://127.0.0.1:33190';
@@ -72,7 +73,7 @@ const requests = []; const bulkRequests = []; const urlRequests = []; const repl
 try {
   const health = await fetch(CMS + '/api/release', { signal: AbortSignal.timeout(5000) });
   assert.equal(health.status, 200);
-  assert.equal((await health.json()).revision, report.cmsRevision, 'The tunnel must serve the exact manifest CMS revision');
+  assert.equal((await observedJson(health, 'Release response JSON')).revision, report.cmsRevision, 'The tunnel must serve the exact manifest CMS revision');
   const { chromium } = await import('/home/ubuntu/.local/share/agent-web-tools/node_modules/playwright/index.mjs');
   browser = await chromium.launch({ channel: 'chromium', headless: true, chromiumSandbox: true });
   context = await browser.newContext({ locale: 'en-US', viewport: { width: 1360, height: 980 } });
@@ -172,7 +173,7 @@ try {
         intercepted = true;
         const response = await route.fetch();
         assert.equal(response.status(), 200, 'This scenario hides only a real complete bulk commit');
-        capturedBulkCommit = await response.json(); blockReceipts = true;
+        capturedBulkCommit = await observedJson(response); blockReceipts = true;
         return route.abort('connectionreset');
       }
     }
@@ -266,7 +267,7 @@ try {
       const acknowledged = page.waitForResponse((response) => response.request().method() === 'POST' && /^\/upload(?:\/files)?$/.test(new URL(response.url()).pathname));
       const offset = requests.length; await selectNew(filePath); const uploadKey = await nextKey(offset);
       const response = await acknowledged; assert.ok(response.ok());
-      const body = await response.json(); const file = (Array.isArray(body) ? body : [body])[0];
+      const body = await observedJson(response); const file = (Array.isArray(body) ? body : [body])[0];
       assert.ok(Number.isSafeInteger(file.id) && file.id > 0); assert.equal(file.name, name);
       await committed(uploadKey); files.push(file);
     }
@@ -276,7 +277,7 @@ try {
     await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill(folderName);
     const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname.replace(/\/$/, '') === '/upload/folders');
     await page.getByRole('dialog').getByRole('button', { name: 'Create', exact: true }).click();
-    const folderResponse = await created; assert.ok(folderResponse.ok()); const folderBody = await folderResponse.json();
+    const folderResponse = await created; assert.ok(folderResponse.ok()); const folderBody = await observedJson(folderResponse, 'Folder creation response JSON');
     const folder = folderBody.data; assert.ok(Number.isSafeInteger(folder.id) && folder.id > 0); assert.equal(folder.name, folderName);
     await page.goto(CMS + '/admin/plugins/upload');
     for (const file of files) {
@@ -296,7 +297,7 @@ try {
     await page.goto(CMS + '/admin/plugins/upload');
     for (const [pending, deleted] of [[listing, files.map((file) => file.id)], [folders, [folder.id]]]) {
       const response = await pending; assert.ok(response.ok());
-      const body = await response.json(); const rows = body.results || body.data || body;
+      const body = await observedJson(response); const rows = body.results || body.data || body;
       assert.ok(Array.isArray(rows), 'The actual admin listing must have loaded successfully');
       assert.ok(rows.every((row) => !deleted.includes(row.id)));
     }
@@ -354,11 +355,16 @@ try {
   await fs.writeFile(replacementFixture,
     await sharp({ create: { width: 64, height: 48, channels: 3, background: '#14b8a6' } }).png().toBuffer(), { mode: 0o600 });
   const openReplacementAsset = async () => {
-    const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
-      && new URL(response.url()).pathname === '/upload/files/' + replacementAllowed);
-    await page.goto(CMS + '/admin/plugins/upload?assetId=' + replacementAllowed);
-    const response = await loaded; assert.ok(response.ok());
-    const body = await response.json(); const asset = body.data || body;
+    const navigation = new URL('/admin/plugins/upload', CMS);
+    navigation.searchParams.set('assetId', String(replacementAllowed));
+    navigation.searchParams.set('gthfRecoveryVisit', randomUUID());
+    const navigationUrl = navigation.href;
+    const loaded = page.waitForResponse((response) => matchesNavigationResponse(response, navigationUrl, '/upload/files/' + replacementAllowed));
+    const [, response] = await Promise.all([page.goto(navigationUrl), loaded]);
+    assert.equal(new URL(page.url()).searchParams.get('gthfRecoveryVisit'), navigation.searchParams.get('gthfRecoveryVisit'),
+      'The actual Strapi router must retain this navigation identity');
+    assert.ok(response.ok());
+    const body = await observedJson(response); const asset = body.data || body;
     assert.equal(asset.id, replacementAllowed); assert.equal(typeof asset.hash, 'string');
     await page.getByRole('button', { name: 'Replace this file', exact: true }).waitFor();
     return asset;
@@ -490,13 +496,37 @@ try {
   for (const value of Object.values(credentials)) if (typeof value === 'string' && value.length >= 8) detail = detail.split(value).join('[redacted]');
   detail = detail.replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, 'Bearer [redacted]');
   await fs.writeFile(path.join(directory, 'failure.txt'), detail + '\n', { mode: 0o600 });
-  if (page) await page.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {});
+  await writeReport();
+  if (page) {
+    try { await boundedObservation(() => page.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }), 'Failure screenshot', 5000); }
+    catch (captureError) { report.failureCaptureError = captureError.name; }
+  }
   process.exitCode = 1;
 } finally {
-  if (tracing) await context.tracing.stop({ path: path.join(directory, 'trace.zip') }).catch(() => {});
-  if (browser) await browser.close();
+  let outcome = report.status;
+  report.status = outcome === 'passed' ? 'finalizing' : outcome;
+  report.cleanup = { trace: tracing ? 'pending' : 'not-started', browser: browser ? 'pending' : 'not-started' };
+  // Keep an interrupted/failed observation durable before closing transports.
+  // A report still marked finalizing never constitutes a successful qualification.
+  await writeReport();
+  if (tracing) {
+    try {
+      await boundedObservation(() => context.tracing.stop({ path: path.join(directory, 'trace.zip') }), 'Trace finalization', 10_000);
+      report.cleanup.trace = 'saved';
+    } catch (error) { outcome = 'failed'; report.cleanup.trace = 'failed'; report.traceError = error.name; }
+  }
+  if (browser) {
+    try { await browser.close(); report.cleanup.browser = 'closed'; }
+    catch (error) { outcome = 'failed'; report.cleanup.browser = 'unconfirmed'; report.browserCloseError = error.name; }
+  }
+  report.status = outcome;
+  if (outcome !== 'passed') process.exitCode = 1;
   report.finishedAt = new Date().toISOString();
-  await fs.writeFile(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
-  await fs.writeFile(path.join(directory, 'REPORT.md'), `# Golden Journeys admin médias\n\n## Summary\n\nRésultat : ${report.status}. Révision CMS : ${report.cmsRevision}. Script : ${sourceRevision}. Le test utilise uniquement la campagne synthétique ${report.campaignId}.\n\n## Synthèse\n\n${report.scenarios.map((item) => '- ' + item.name + ' : ' + item.status).join('\n')}\n\n${report.failedStep ? 'Étape en échec : ' + report.failedStep + '. Aucune acceptation annoncée.\n\n' : ''}${report.limits.join(' ')}\n\n## Annexes\n\nDétails expurgés : report.json. Trace et capture privées dans ce répertoire, à ne pas publier.\n`, { mode: 0o600 });
+  await writeReport();
   process.stdout.write(JSON.stringify({ status: report.status, campaignId: report.campaignId, scenarios: report.scenarios.length, report: path.join(directory, 'report.json') }) + '\n');
+}
+
+async function writeReport() {
+  await fs.writeFile(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+  await fs.writeFile(path.join(directory, 'REPORT.md'), `# Golden Journeys admin médias\n\n## Summary\n\nRésultat : ${report.status}. Révision CMS : ${report.cmsRevision}. Script : ${sourceRevision}. Le test utilise uniquement la campagne synthétique ${report.campaignId}.\n\n## Synthèse\n\n${report.scenarios.map((item) => '- ' + item.name + ' : ' + item.status).join('\n')}\n\n${report.failedStep ? 'Étape en échec : ' + report.failedStep + '. Aucune acceptation annoncée.\n\n' : ''}${report.limits.join(' ')}\n\nNettoyage : ${report.cleanup ? JSON.stringify(report.cleanup) : 'pas encore commencé'}. Un état finalizing, un nettoyage pending ou une fermeture unconfirmed ne constitue pas une réussite.\n\n## Annexes\n\nDétails expurgés : report.json. Trace et capture privées dans ce répertoire, à ne pas publier.\n`, { mode: 0o600 });
 }
