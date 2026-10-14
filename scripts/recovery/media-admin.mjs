@@ -400,16 +400,23 @@ try {
 
   step = 'Golden Journey beta crop Apply persists its replacement and keeps anonymous receipts forbidden';
   replacementOffset = replacementRequests.length;
+  assert.deepEqual([afterReload.width, afterReload.height], [64, 48]);
   await page.getByRole('button', { name: 'Crop', exact: true }).click();
-  await page.getByRole('button', { name: 'Apply', exact: true }).click();
+  const applyCrop = page.getByRole('button', { name: 'Apply', exact: true });
+  await until(() => applyCrop.isEnabled(), Boolean); // The real CORS image has loaded into the canvas.
+  await page.getByLabel('Width (px)', { exact: true }).fill('32');
+  await page.getByLabel('Height (px)', { exact: true }).fill('24');
+  await applyCrop.click();
   const cropKey = await nextReplacementKey(replacementOffset); await committed(cropKey);
   assert.notEqual(cropKey, replacementLost); assert.equal(replacementRequests.slice(replacementOffset).length, 1);
   const croppedAsset = await openReplacementAsset(); assert.notEqual(croppedAsset.hash, afterReload.hash);
+  assert.deepEqual([croppedAsset.width, croppedAsset.height], [32, 24], 'The actual cropped dimensions must persist in Strapi');
   const anonymous = await fetch(CMS + '/upload/recovery/operations/' + cropKey, { signal: AbortSignal.timeout(5000) });
   assert.ok([401, 403].includes(anonymous.status), 'An anonymous reader must not receive a private replacement receipt');
   await page.screenshot({ path: path.join(directory, 'beta-replacement-crop.png'), fullPage: true });
   report.scenarios.push({ name: step, status: 'passed', operationKey: cropKey, mediaId: replacementAllowed,
-    postCount: 1, anonymousReceiptStatus: anonymous.status, cropApplied: true });
+    postCount: 1, anonymousReceiptStatus: anonymous.status, cropApplied: true,
+    dimensionsBefore: [afterReload.width, afterReload.height], dimensionsAfter: [croppedAsset.width, croppedAsset.height] });
   if (urlFixture) {
     // Enable Strapi's shipped beta library only inside this test browser. The
     // production feature configuration and the server's SSRF rules are unchanged.

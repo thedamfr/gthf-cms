@@ -188,10 +188,15 @@ Playwright et restent distinctes des vrais SIGKILL/coupures QEMU de la campagne.
 Trois parcours supplémentaires exercent les contrôles bêta **Replace this file** et
 **Crop → Apply** : réessai après perte avant envoi avec la même clé ; nouvelle sélection
 volontaire avec clé neuve, réponse perdue après commit puis reçu après rechargement
-sans second POST ; recadrage persistant et reçu interdit au lecteur anonyme. La
+sans second POST ; recadrage réel de 64×48 vers 32×24, dimensions relues dans Strapi
+et reçu interdit au lecteur anonyme. La
 révocation des droits courants est aussi vérifiée par les tests du client et les
-parcours serveur de la campagne commune. Ces nouveaux parcours doivent être exécutés
-sur la révision corrective ; les huit succès historiques ci-dessus ne les couvrent pas.
+parcours serveur de la campagne commune. La révision
+`6eb26a3da0d1a57531ca7201599147796fc20524` a réussi les onze parcours réels le
+14 octobre 2026, de 06:19:11 à 06:20:06 UTC. Son scénario Crop appliquait le cadrage
+plein format : il prouvait le transport, le commit et le reçu, pas des dimensions
+modifiées. Le renforcement 32×24 reste à rejouer sur sa propre révision ; le succès
+historique reste conservé et ne remplace pas cette preuve.
 Aucune coupure VM n’est effectuée par cette commande. Les médias synthétiques
 créés restent conservés pour les vérifications SQL/S3 et le nettoyage final du banc.
 
