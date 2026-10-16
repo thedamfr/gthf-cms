@@ -162,3 +162,16 @@ for (const code of ['ENOSPC', 'EIO']) test(`the real finalization closes trace a
     assert.equal(JSON.parse(await fs.promises.readFile(path.join(directory, 'report.json'), 'utf8')).status, 'failed');
   });
 });
+
+
+test('bulk file and folder listings ignore refetches from the document before navigation', async () => {
+  for (const apiPath of ['/upload/files', '/upload/folders']) {
+    let abandonedBodyReads = 0;
+    const old = fakeResponse(previous, async () => { abandonedBodyReads++; throw new Error('document abandoned'); }, 'GET', 'https://cms.invalid' + apiPath);
+    const fresh = fakeResponse(current, async () => ({ results: [{ id: 91 }] }), 'GET', 'https://cms.invalid' + apiPath);
+    const selected = [old, fresh].find((response) => matchesNavigationResponse(response, current, apiPath));
+    assert.equal(selected, fresh);
+    assert.deepEqual(await observedJson(selected), { results: [{ id: 91 }] });
+    assert.equal(abandonedBodyReads, 0);
+  }
+});

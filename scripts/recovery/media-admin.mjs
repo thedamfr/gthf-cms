@@ -292,9 +292,14 @@ try {
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();
   };
   const assertSelectionGone = async ({ files, folder }) => {
-    const listing = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/upload/files');
-    const folders = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname.replace(/\/$/, '') === '/upload/folders');
-    await page.goto(CMS + '/admin/plugins/upload');
+    const navigation = new URL('/admin/plugins/upload', CMS);
+    navigation.searchParams.set('gthfRecoveryVisit', randomUUID());
+    const navigationUrl = navigation.href;
+    const listing = page.waitForResponse((response) => matchesNavigationResponse(response, navigationUrl, '/upload/files'));
+    const folders = page.waitForResponse((response) => matchesNavigationResponse(response, navigationUrl, '/upload/folders'));
+    await page.goto(navigationUrl);
+    assert.equal(new URL(page.url()).searchParams.get('gthfRecoveryVisit'), navigation.searchParams.get('gthfRecoveryVisit'),
+      'The bulk listing must belong to this navigation');
     for (const [pending, deleted] of [[listing, files.map((file) => file.id)], [folders, [folder.id]]]) {
       const response = await pending; assert.ok(response.ok());
       const body = await observedJson(response); const rows = body.results || body.data || body;
