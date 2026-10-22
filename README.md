@@ -71,7 +71,7 @@ Documents de référence :
 
 ### Prerequisites
 
-- Node.js v24.3.0+
+- Node.js v24.22.1+ (version épinglée dans `.nvmrc` et en CI)
 - Docker & Docker Compose
 
 ### 1. Start Infrastructure
