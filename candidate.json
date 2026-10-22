@@ -2,12 +2,12 @@
   "publication": {
     "component": "cms",
     "repository": "thedamfr/gthf-cms",
-    "revision": "9802311eae8737926f76a4d6567c55030679dfb0",
-    "runId": 39751767884,
+    "revision": "9b459cc1530de266773ecae1df4a39b529dc608f",
+    "runId": 39762912269,
     "runAttempt": 2
   },
-  "owner": "github-cms-39751767884",
-  "startedAt": "2026-10-22T09:05:27.232Z",
+  "owner": "github-cms-39762912269",
+  "startedAt": "2026-10-22T10:31:20.342Z",
   "deployerRevision": "9aba52eec841ca5a412865fb2a823d198ff43bf5",
   "plan": {
     "build": true,
@@ -16,11 +16,11 @@
   },
   "components": {
     "cms": {
-      "image": "ghcr.io/thedamfr/gthf-cms@sha256:357bb88420e9358722a507ad8d5dd381b61443336304bd75a9643e5dd1b4eac3",
-      "revision": "9802311eae8737926f76a4d6567c55030679dfb0",
-      "processedRevision": "9802311eae8737926f76a4d6567c55030679dfb0",
+      "image": "ghcr.io/thedamfr/gthf-cms@sha256:54521917984f693a2542132701a2c7eed83da91e754292bb62dee092409b1d0f",
+      "revision": "9b459cc1530de266773ecae1df4a39b529dc608f",
+      "processedRevision": "9b459cc1530de266773ecae1df4a39b529dc608f",
       "fingerprints": {
-        "runtime": "bfa1f3e6fb7893cd752d469c1c08f097800c4bea4f9630d74cbe87a279914247",
+        "runtime": "e47a78483b7485233b759c6055d8576e0150e4e642329f5171d21b0ab805a2c1",
         "infrastructure": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "postgres": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       },
